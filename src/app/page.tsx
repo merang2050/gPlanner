@@ -12,59 +12,37 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { ChevronDown, Download, Trash2, Share2 } from "lucide-react";
+import { Download, Trash2, Share2 } from "lucide-react";
 
 type QuadKey = "UI" | "NUI" | "UNI" | "NUNI";
 type Stars = 1 | 2 | 3 | 4;
-type TimeScale = "year" | "month" | "week" | "day";
+type TimeScale = "year" | "month" | "week" | "day" | "hour";
 
-type TaskRaw = {
+interface TaskItem {
   id: string;
   date: string;
   deadline: string;
   project: string;
   text: string;
-  quad: QuadKey;
-  rDay: string;
-  deadlineShort: string;
+  stars: Stars;
   posAngle: number;
   posRadius: number;
-  stars: Stars;
-  timeScale: TimeScale;
   finishDate?: string;
+  timeScale: TimeScale;
+}
+
+const angleCenter: Record<QuadKey, number> = {
+  UI: 135,
+  NUI: 45,
+  UNI: 225,
+  NUNI: 315,
 };
-
-type TaskItem = TaskRaw;
-
-type QuadCounts = {
-  UI: number;
-  NUI: number;
-  UNI: number;
-  NUNI: number;
-};
-
-const defaultQuadCounts: QuadCounts = {
-  UI: 0,
-  NUI: 0,
-  UNI: 0,
-  NUNI: 0,
-};
-
-const quadAngles: Record<QuadKey, number> = {
-  UI: 45,
-  UNI: 135,
-  NUNI: 225,
-  NUI: 315,
-};
-
-// All displayed stars should be golden
-const starColor = (_stars: Stars): string => "#facc15";
 
 const quadLabelByKey: Record<QuadKey, string> = {
-  UI: "Urgent · Important",
-  NUI: "Not urgent · Important",
-  UNI: "Urgent · Not important",
-  NUNI: "Not urgent · Not important",
+  UI: "(1–7 days)",
+  NUI: "(1–4 weeks)",
+  UNI: "(1–12 months)",
+  NUNI: "(1–10 years)",
 };
 
 const quadrantForStars = (s: Stars): QuadKey => {
@@ -76,312 +54,39 @@ const quadrantForStars = (s: Stars): QuadKey => {
     case 3:
       return "NUI";
     case 4:
+    default:
       return "UI";
   }
 };
 
-const starsForQuadrant = (q: QuadKey): Stars => {
-  switch (q) {
-    case "UI":
-      return 4;
-    case "NUI":
-      return 3;
-    case "UNI":
-      return 2;
-    case "NUNI":
-      return 1;
-  }
-};
-
-const timeScaleLabel: Record<TimeScale, string> = {
-  year: "Year-scale",
-  month: "Month-scale",
-  week: "Week-scale",
-  day: "Day-scale",
-};
-
-const timeScaleDotRadius = (ts: TimeScale): number => {
-  switch (ts) {
-    case "year":
-      return 18;
-    case "month":
-      return 16;
-    case "week":
-      return 14;
-    case "day":
-      return 12;
-  }
-};
-
-const storageKey = "geometry_planner_tasks_v1";
-
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
-
-function downloadBlob(filename: string, content: string) {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.setAttribute("download", filename);
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function uploadFromFile(onLoaded: (text: string) => void) {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".csv,text/csv";
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result;
-      if (typeof text === "string") {
-        onLoaded(text);
-      }
-    };
-    reader.readAsText(file);
-  };
-  input.click();
-}
-
-function formatLocalDate(date: string): string {
-  if (!date) return "";
-  const d = new Date(date);
-  if (isNaN(d.getTime())) return date;
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${mm}:${dd}:${yy}`;
-}
-
-const MAX_PER_QUAD = 10;
-
-function computeQuadCounts(tasks: TaskItem[]): QuadCounts {
-  const counts: QuadCounts = { UI: 0, NUI: 0, UNI: 0, NUNI: 0 };
-  tasks.forEach((t) => {
-    counts[t.quad] = (counts[t.quad] || 0) + 1;
-  });
-  return counts;
-}
-
-function toCsv(tasks: TaskItem[]): string {
-  const header = [
-    "id",
-    "date",
-    "deadline",
-    "deadline_short",
-    "project",
-    "text",
-    "quad",
-    "rDay",
-    "posAngle",
-    "posRadius",
-    "stars",
-    "timeScale",
-    "finishDate",
-  ];
-  const rows = tasks.map((t) => [
-    t.id,
-    t.date,
-    t.deadline,
-    t.deadlineShort,
-    t.project,
-    t.text.replace(/\n/g, " "),
-    t.quad,
-    t.rDay,
-    t.posAngle.toFixed(3),
-    t.posRadius.toFixed(3),
-    String(t.stars),
-    t.timeScale,
-    t.finishDate ?? "",
-  ]);
-  return [header.join(","), ...rows.map((r) => r.join(","))].join("\n");
-}
-
-function fromCsv(text: string): TaskRaw[] {
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  if (lines.length < 2) return [];
-  const header = lines[0].split(",");
-  const idx = (name: string) => header.indexOf(name);
-
-  const idIdx = idx("id");
-  const dateIdx = idx("date");
-  const deadlineIdx = idx("deadline");
-  const deadlineShortIdx = idx("deadline_short");
-  const projectIdx = idx("project");
-  const textIdx = idx("text");
-  const quadIdx = idx("quad");
-  const rDayIdx = idx("rDay");
-  const angleIdx = idx("posAngle");
-  const radiusIdx = idx("posRadius");
-  const starsIdx = idx("stars");
-  const tsIdx = idx("timeScale");
-  const finishIdx = idx("finishDate");
-
-  const out: TaskRaw[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].split(",");
-    if (parts.length < 10) continue;
-    const quad = parts[quadIdx] as QuadKey;
-    const stars = Number(parts[starsIdx]) as Stars;
-    const timeScale = (parts[tsIdx] as TimeScale) ?? "week";
-    const finishDate = finishIdx >= 0 ? parts[finishIdx] : "";
-
-    out.push({
-      id: parts[idIdx] || String(i),
-      date: parts[dateIdx] || "",
-      deadline: parts[deadlineIdx] || "",
-      deadlineShort: parts[deadlineShortIdx] || "",
-      project: parts[projectIdx] || "",
-      text: parts[textIdx] || "",
-      quad,
-      rDay: parts[rDayIdx] || "",
-      posAngle: Number(parts[angleIdx]) || 0,
-      posRadius: Number(parts[radiusIdx]) || 0.5,
-      stars,
-      timeScale,
-      finishDate,
-    });
-  }
-
-  return out;
-}
-
-function daysRemaining(deadline: string): string {
-  if (!deadline) return "—";
-  const today = new Date();
-  const d = new Date(deadline);
-  if (isNaN(d.getTime())) return "—";
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const diff = d.setHours(0, 0, 0, 0) - today.setHours(0, 0, 0, 0);
-  const days = Math.round(diff / msPerDay);
-  return String(days);
-}
-
-function formatDeadlineShort(deadline: string): string {
-  if (!deadline) return "";
-  const d = new Date(deadline);
-  if (isNaN(d.getTime())) return deadline;
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${mm}/${dd}/${yy}`;
-}
-
-function computeInitialAngle(stars: Stars): number {
-  switch (stars) {
-    case 4:
-      return 45;
-    case 3:
-      return 315;
-    case 2:
-      return 135;
+const starColor = (s: Stars) => {
+  switch (s) {
     case 1:
-      return 225;
+      return "#38bdf8"; // years
+    case 2:
+      return "#22c55e"; // months
+    case 3:
+      return "#f97316"; // weeks
+    case 4:
+    default:
+      return "#ef4444"; // days
   }
-}
-
-function computeBandRadius(stars: Stars, deadline: string): number {
-  const r = daysRemaining(deadline);
-  if (r === "—") {
-    return 0.5;
-  }
-  const days = Number(r);
-  if (Number.isNaN(days)) return 0.5;
-
-  if (stars === 4) {
-    const d = clamp(days, 1, 7);
-    const frac = (d - 1) / (7 - 1);
-    return 0.2 + 0.8 * (1 - frac);
-  } else if (stars === 3) {
-    const weeks = clamp(Math.ceil(days / 7), 1, 4);
-    const frac = (weeks - 1) / (4 - 1);
-    return 0.2 + 0.8 * (1 - frac);
-  } else if (stars === 2) {
-    const months = clamp(Math.ceil(days / 30), 1, 12);
-    const frac = (months - 1) / (12 - 1);
-    return 0.2 + 0.8 * (1 - frac);
-  } else {
-    const years = clamp(Math.ceil(days / 365), 1, 10);
-    const frac = (years - 1) / (10 - 1);
-    return 0.2 + 0.8 * (1 - frac);
-  }
-}
-
-function computeStarFromDeadline(deadline: string): Stars {
-  const r = daysRemaining(deadline);
-  if (r === "—") return 4;
-  const days = Number(r);
-  if (Number.isNaN(days)) return 4;
-  if (days <= 7) return 4;
-  if (days <= 30) return 3;
-  if (days <= 365) return 2;
-  return 1;
-}
-
-function polarToCartesian(
-  cx: number,
-  cy: number,
-  radius: number,
-  angleDeg: number
-) {
-  const angleRad = (angleDeg * Math.PI) / 180;
-  return {
-    x: cx + radius * Math.cos(angleRad),
-    y: cy + radius * Math.sin(angleRad),
-  };
-}
-
-function cartesianToPolar(
-  cx: number,
-  cy: number,
-  x: number,
-  y: number
-): { angle: number; radius: number } {
-  const dx = x - cx;
-  const dy = y - cy;
-  let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-  if (angle < 0) angle += 360;
-  const radius = Math.sqrt(dx * dx + dy * dy);
-  return { angle, radius };
-}
-
-function nearestQuadrant(angle: number): QuadKey {
-  const quads: QuadKey[] = ["UI", "UNI", "NUNI", "NUI"];
-  let bestQuad: QuadKey = "UI";
-  let bestDist = Infinity;
-  for (const q of quads) {
-    const center = quadAngles[q];
-    let diff = Math.abs(angle - center);
-    if (diff > 180) diff = 360 - diff;
-    if (diff < bestDist) {
-      bestDist = diff;
-      bestQuad = q;
-    }
-  }
-  return bestQuad;
-}
-
-type StarProps = {
-  color?: string;
-  size?: number;
 };
 
-function StarSVG({ color = "#facc15", size = 18 }: StarProps) {
+const timeScaleDotRadius = (_ts: TimeScale): number => 24;
+
+function StarSVG({
+  size = 14,
+  color = "#fbbf24", // golden by default
+}: {
+  size?: number;
+  color?: string;
+}) {
   return (
     <svg
-      viewBox="0 0 24 24"
       width={size}
       height={size}
+      viewBox="0 0 24 24"
       aria-hidden="true"
       className="inline-block"
     >
@@ -395,154 +100,270 @@ function StarSVG({ color = "#facc15", size = 18 }: StarProps) {
   );
 }
 
-function StarSelect({
-  value,
-  onChange,
-}: {
-  value: Stars;
-  onChange: (v: Stars) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (!open) return;
-      const target = e.target as Node;
-      if (containerRef.current && containerRef.current.contains(target)) return;
-      setOpen(false);
-    };
-    window.addEventListener("mousedown", handler);
-    return () => window.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  const labelRow = (n: Stars) => (
-    <div className="flex items-center gap-1">
-      {Array.from({ length: n }).map((_, i) => (
-        <StarSVG key={i} color={starColor(n)} size={18} />
-      ))}
-    </div>
-  );
-
+function StarRow({ stars }: { stars: Stars }) {
   return (
-    <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
-        className="border rounded-md px-2 py-1 bg-white flex items-center gap-2 hover:bg-neutral-50"
-        onClick={() => setOpen((o) => !o)}
-      >
-        {labelRow(value)}
-        <ChevronDown className="w-4 h-4 text-neutral-500" />
-      </button>
-      {open && (
-        <div className="absolute z-50 mt-1 w-48 bg-white border rounded-md shadow-lg p-2 space-y-1">
-          {[1, 2, 3, 4].map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => {
-                onChange(n as Stars);
-                setOpen(false);
-              }}
-              className={`w-full text-left rounded-md px-2 py-1 hover:bg-neutral-100 ${
-                n === value ? "bg-neutral-100" : ""
-              }`}
-            >
-              {labelRow(n as Stars)}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <span className="inline-flex items-center gap-0.5">
+      {Array.from({ length: stars }).map((_, i) => (
+        <StarSVG key={i} size={14} />
+      ))}
+    </span>
   );
 }
 
-function useLocalStorageTasks(): [TaskItem[], (tasks: TaskItem[]) => void] {
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
+const clamp = (x: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, x));
 
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(storageKey);
-      if (!stored) return;
-      const raw = JSON.parse(stored) as TaskRaw[];
-      const placed: TaskItem[] = raw.map((t) => {
-        const star =
-          (t.stars as Stars) || computeStarFromDeadline(t.deadline ?? "");
-        const quad = t.quad || quadrantForStars(star);
-        const timeScale = t.timeScale ?? "week";
-        return {
-          ...t,
-          quad,
-          stars: star,
-          timeScale,
-          rDay: t.rDay || daysRemaining(t.deadline),
-          deadlineShort: t.deadlineShort || formatDeadlineShort(t.deadline),
-        };
-      });
+function daysRemainingNumber(deadline: string): number | null {
+  if (!deadline) return null;
+  const d = new Date(deadline);
+  if (isNaN(d.getTime())) return null;
 
-      const newPlaced = placed.map((t) => {
-        let radius = t.posRadius;
-        if (!radius || radius < 0.2 || radius > 1) {
-          radius = computeBandRadius(t.stars, t.deadline);
-        }
-        return {
-          ...t,
-          posRadius: radius,
-        };
-      });
-      setTasks(newPlaced);
-    } catch (e) {
-      console.error("Failed to load tasks from localStorage", e);
-    }
-  }, []);
+  const today = new Date();
+  const msPerDay = 1000 * 60 * 60 * 24;
 
-  const persist = (next: TaskItem[]) => {
-    setTasks(next);
-    try {
-      const raw: TaskRaw[] = next.map((t) => ({
-        id: t.id,
-        date: t.date,
-        deadline: t.deadline,
-        deadlineShort: t.deadlineShort,
-        project: t.project,
-        text: t.text,
-        quad: t.quad,
-        rDay: t.rDay,
-        posAngle: t.posAngle,
-        posRadius: t.posRadius,
-        stars: t.stars,
-        timeScale: t.timeScale,
-        finishDate: t.finishDate,
-      }));
-      window.localStorage.setItem(storageKey, JSON.stringify(raw));
-    } catch (e) {
-      console.error("Failed to save tasks to localStorage", e);
-    }
-  };
+  const utcToday = Date.UTC(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate()
+  );
+  const utcDeadline = Date.UTC(
+    d.getFullYear(),
+    d.getMonth(),
+    d.getDate()
+  );
 
-  return [tasks, persist];
+  const diff = utcDeadline - utcToday;
+  const days = Math.round(diff / msPerDay);
+  return days;
 }
 
-function useWindowSize() {
-  const [size, setSize] = useState<{ width: number; height: number }>({
-    width: 1024,
-    height: 768,
-  });
+function formatDeadlineMMDDYYYY(deadline: string): string {
+  if (!deadline) return "—";
+  const d = new Date(deadline);
+  if (isNaN(d.getTime())) return deadline;
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
 
-  useEffect(() => {
-    const handler = () => {
-      setSize({ width: window.innerWidth, height: window.innerHeight });
-    };
-    handler();
-    window.addEventListener("resize", handler);
-    return () => window.removeEventListener("resize", handler);
-  }, []);
+interface TimeBucket {
+  stars: Stars;
+  unitIndex: number;
+  label: string;
+}
 
-  return size;
+function unitsPerStars(stars: Stars): number {
+  switch (stars) {
+    case 4:
+      return 7; // days
+    case 3:
+      return 4; // weeks
+    case 2:
+      return 12; // months
+    case 1:
+    default:
+      return 10; // years
+  }
+}
+
+function bucketFromDays(days: number | null): TimeBucket {
+  let d = days;
+  if (d == null || isNaN(d)) {
+    return { stars: 1, unitIndex: 1, label: "1y" };
+  }
+  if (d <= 0) d = 1;
+
+  if (d <= 7) {
+    const N = 7;
+    const dMin = 1;
+    const dMax = 7;
+    const local = (d - dMin) / (dMax - dMin || 1);
+    const idxFloat = local * (N - 1);
+    const idx = clamp(Math.round(idxFloat) + 1, 1, N);
+    return { stars: 4, unitIndex: idx, label: `${idx}d` };
+  }
+
+  if (d <= 28) {
+    const N = 4;
+    const dMin = 8;
+    const dMax = 28;
+    const local = (d - dMin) / (dMax - dMin || 1);
+    const idxFloat = local * (N - 1);
+    const idx = clamp(Math.round(idxFloat) + 1, 1, N);
+    return { stars: 3, unitIndex: idx, label: `${idx}w` };
+  }
+
+  if (d <= 365) {
+    const N = 12;
+    const dMin = 29;
+    const dMax = 365;
+    const local = (d - dMin) / (dMax - dMin || 1);
+    const idxFloat = local * (N - 1);
+    const idx = clamp(Math.round(idxFloat) + 1, 1, N);
+    return { stars: 2, unitIndex: idx, label: `${idx}m` };
+  }
+
+  {
+    const N = 10;
+    const dMin = 366;
+    const dMax = 3650;
+    const clamped = Math.min(Math.max(d, dMin), dMax);
+    const local = (clamped - dMin) / (dMax - dMin || 1);
+    const idxFloat = local * (N - 1);
+    const idx = clamp(Math.round(idxFloat) + 1, 1, N);
+    return { stars: 1, unitIndex: idx, label: `${idx}y` };
+  }
+}
+
+function daysFromBucket(b: TimeBucket): number {
+  let N: number;
+  let dMin: number;
+  let dMax: number;
+
+  switch (b.stars) {
+    case 4:
+      N = 7;
+      dMin = 1;
+      dMax = 7;
+      break;
+    case 3:
+      N = 4;
+      dMin = 8;
+      dMax = 28;
+      break;
+    case 2:
+      N = 12;
+      dMin = 29;
+      dMax = 365;
+      break;
+    case 1:
+    default:
+      N = 10;
+      dMin = 366;
+      dMax = 3650;
+      break;
+  }
+
+  const idx = clamp(b.unitIndex, 1, N);
+  const localCenter = (idx - 0.5) / N;
+  const dFloat = dMin + localCenter * (dMax - dMin);
+  const d = Math.round(dFloat);
+  return d;
+}
+
+function timeScaleFromBucket(b: TimeBucket): TimeScale {
+  switch (b.stars) {
+    case 4:
+      return "day";
+    case 3:
+      return "week";
+    case 2:
+      return "month";
+    case 1:
+    default:
+      return "year";
+  }
+}
+
+function bucketFromStarsAndIndex(stars: Stars, unitIndex: number): TimeBucket {
+  const N = unitsPerStars(stars);
+  const idx = clamp(unitIndex, 1, N);
+  switch (stars) {
+    case 4:
+      return { stars, unitIndex: idx, label: `${idx}d` };
+    case 3:
+      return { stars, unitIndex: idx, label: `${idx}w` };
+    case 2:
+      return { stars, unitIndex: idx, label: `${idx}m` };
+    case 1:
+    default:
+      return { stars, unitIndex: idx, label: `${idx}y` };
+  }
+}
+
+function daysToRadius(days: number | null): number {
+  const b = bucketFromDays(days);
+  const N = unitsPerStars(b.stars);
+  const idx = clamp(b.unitIndex, 1, N);
+  const radiusFrac = (idx - 0.5) / N;
+  return radiusFrac;
+}
+
+function radiusFromDeadline(deadline: string): number {
+  const d = daysRemainingNumber(deadline);
+  return daysToRadius(d);
+}
+
+function starsFromDeadline(deadline: string): Stars {
+  const d = daysRemainingNumber(deadline);
+  return bucketFromDays(d).stars;
+}
+
+function timeScaleFromDeadline(deadline: string): TimeScale {
+  const d = daysRemainingNumber(deadline);
+  return timeScaleFromBucket(bucketFromDays(d));
+}
+
+function parseTasksFromCSV(text: string): TaskItem[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length < 2) return [];
+
+  const header = lines[0].split(",");
+  const idx = (name: string) => header.indexOf(name);
+
+  const iId = idx("id");
+  const iDate = idx("date");
+  const iDeadline = idx("deadline");
+  const iProject = idx("project");
+  const iTask = idx("task");
+  const iFinish = idx("finishDate");
+
+  const tasks: TaskItem[] = [];
+
+  for (let li = 1; li < lines.length; li++) {
+    const cols = lines[li].split(",");
+    const get = (i: number) =>
+      i >= 0 && i < cols.length ? cols[i] : "";
+
+    const rawDeadline = get(iDeadline);
+    const deadline = rawDeadline || "";
+    const date = get(iDate) || new Date().toISOString().slice(0, 10);
+    const project = get(iProject) || "";
+    const text = get(iTask) || "";
+    const finishDate = get(iFinish) || undefined;
+
+    const stars = starsFromDeadline(deadline);
+    const quad = quadrantForStars(stars);
+    const posRadius = radiusFromDeadline(deadline);
+    const timeScale = timeScaleFromDeadline(deadline);
+    const posAngle = angleCenter[quad];
+
+    const id = get(iId) || `import-${li}-${Date.now()}`;
+
+    tasks.push({
+      id,
+      date,
+      deadline,
+      project,
+      text,
+      stars,
+      posAngle,
+      posRadius,
+      timeScale,
+      finishDate,
+    });
+  }
+
+  return tasks;
 }
 
 function buildShareText(tasks: TaskItem[]): string {
   if (!tasks.length) return "No tasks scheduled.";
+
   const lines: string[] = [];
   lines.push("gPlanner schedule");
   lines.push("");
@@ -552,13 +373,18 @@ function buildShareText(tasks: TaskItem[]): string {
   );
 
   sorted.forEach((t, idx) => {
-    const rem = t.rDay || daysRemaining(t.deadline);
+    const stars = starsFromDeadline(t.deadline);
+    const quad = quadrantForStars(stars);
+    const dNum = daysRemainingNumber(t.deadline);
+    const bucket = bucketFromDays(dNum);
     lines.push(
-      `${idx + 1}. [${quadLabelByKey[t.quad]}] ${
+      `${idx + 1}. [${"★".repeat(stars)} ${quadLabelByKey[quad]}] ${
         t.project || "Untitled"
-      } – ${t.text}  (Date: ${t.date}, Deadline: ${formatDeadlineShort(
+      } – ${t.text} (Date: ${t.date}, Deadline: ${formatDeadlineMMDDYYYY(
         t.deadline
-      )}, Remaining: ${rem})`
+      )}, Remaining: ${bucket.label}${
+        dNum != null ? `, ${dNum} days` : ""
+      })`
     );
   });
 
@@ -570,11 +396,21 @@ export default function Planner() {
   const [deadline, setDeadline] = useState("");
   const [project, setProject] = useState("");
   const [text, setText] = useState("");
-  const [stars, setStars] = useState<Stars>(4);
-  const [timeScale, setTimeScale] = useState<TimeScale>("week");
-  const [tasks, setTasks] = useLocalStorageTasks();
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+
+  const [maxPerQuad, setMaxPerQuad] = useState<{
+    UI: number;
+    NUI: number;
+    UNI: number;
+    NUNI: number;
+  }>({
+    UI: 10,
+    NUI: 10,
+    UNI: 10,
+    NUNI: 10,
+  });
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -587,261 +423,141 @@ export default function Planner() {
   const [editProject, setEditProject] = useState("");
   const [editText, setEditText] = useState("");
 
-  const [csvPreviewOpen, setCsvPreviewOpen] = useState(false);
-  const [csvPreview, setCsvPreview] = useState("");
+  const [csvOpen, setCsvOpen] = useState(false);
+  const [csvFileName, setCsvFileName] = useState(
+    `planner_tasks_${new Date().toISOString().slice(0, 10)}`
+  );
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [shareOpen, setShareOpen] = useState(false);
   const [shareText, setShareText] = useState("");
 
-  const { width } = useWindowSize();
-  const size = Math.min(540, width - 64);
-  const cx = size / 2;
-  const cy = size / 2;
-  const baseRadius = size * 0.32;
-  const bandThickness = size * 0.055;
-
-  const quadCounts = computeQuadCounts(tasks);
-
-  // Dot size scaling by quadrant occupancy
-  const quadTaskIds: Record<QuadKey, string[]> = {
-    UI: [],
-    NUI: [],
-    UNI: [],
-    NUNI: [],
-  };
-  tasks.forEach((t) => {
-    quadTaskIds[t.quad].push(t.id);
-  });
-  const dotScaleById: Record<string, number> = {};
-  (Object.keys(quadTaskIds) as QuadKey[]).forEach((q) => {
-    const n = quadTaskIds[q].length;
-    let scale = 1;
-    if (n >= 8) scale = 0.55;
-    else if (n >= 5) scale = 0.7;
-    else if (n >= 3) scale = 0.85;
-    quadTaskIds[q].forEach((id) => {
-      dotScaleById[id] = scale;
-    });
-  });
-
-  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [initialSetupOpen, setInitialSetupOpen] = useState(false);
 
   useEffect(() => {
-    if (!canvasRef.current) return;
-    const el = canvasRef.current;
-    const rect = el.getBoundingClientRect();
-    const w = Math.min(rect.width, 540);
-    const h = w;
-    el.style.height = `${h}px`;
-  }, [width]);
+    try {
+      const savedTasks = localStorage.getItem("planner_simple_v3");
+      let loaded: TaskItem[] = [];
+      if (savedTasks) {
+        loaded = JSON.parse(savedTasks) as TaskItem[];
+        setTasks(loaded);
+      } else {
+        const savedCSV = localStorage.getItem("planner_simple_v3_csv");
+        if (savedCSV) {
+          const imported = parseTasksFromCSV(savedCSV);
+          if (imported.length > 0) {
+            loaded = imported;
+            setTasks(imported);
+          }
+        }
+      }
 
-  const onAddTask = () => {
-    setWarning(null);
-    if (!deadline) {
-      setWarning("Please set a deadline.");
-      return;
+      const savedMax = localStorage.getItem("planner_simple_v3_max");
+      if (savedMax) {
+        const parsedMax = JSON.parse(savedMax) as {
+          UI: number;
+          NUI: number;
+          UNI: number;
+          NUNI: number;
+        };
+        setMaxPerQuad((prev) => ({
+          UI: parsedMax.UI ?? prev.UI,
+          NUI: parsedMax.NUI ?? prev.NUI,
+          UNI: parsedMax.UNI ?? prev.UNI,
+          NUNI: parsedMax.NUNI ?? prev.NUNI,
+        }));
+      }
+
+      const setupFlag = localStorage.getItem("planner_initial_choice_done");
+      if (!setupFlag && loaded.length === 0) {
+        setInitialSetupOpen(true);
+      }
+    } catch {
+      //
     }
+  }, []);
 
-    const newStars = stars || computeStarFromDeadline(deadline);
-    const quad = quadrantForStars(newStars);
-    const counts = computeQuadCounts(tasks);
-    if (counts[quad] >= MAX_PER_QUAD) {
+  useEffect(() => {
+    try {
+      localStorage.setItem("planner_simple_v3", JSON.stringify(tasks));
+    } catch {
+      //
+    }
+  }, [tasks]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("planner_simple_v3_max", JSON.stringify(maxPerQuad));
+    } catch {
+      //
+    }
+  }, [maxPerQuad]);
+
+  const quadCounts: Record<QuadKey, number> = {
+    UI: 0,
+    NUI: 0,
+    UNI: 0,
+    NUNI: 0,
+  };
+  tasks.forEach((t) => {
+    const s = starsFromDeadline(t.deadline);
+    const q = quadrantForStars(s);
+    quadCounts[q] += 1;
+  });
+
+  const addTask = () => {
+    if (!text.trim()) return;
+
+    const derivedStars = starsFromDeadline(deadline);
+    const quad = quadrantForStars(derivedStars);
+
+    if (quadCounts[quad] >= maxPerQuad[quad]) {
       setWarning(
-        `Max ${MAX_PER_QUAD} tasks allowed in ${quadLabelByKey[quad]} region.`
+        `${quadLabelByKey[quad]} is full (${quadCounts[quad]}/${maxPerQuad[quad]}). Consider finishing or moving a task before adding more.`
       );
       return;
     }
 
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const angle = computeInitialAngle(newStars);
-    const radiusFrac = computeBandRadius(newStars, deadline);
+    const posRadius = radiusFromDeadline(deadline);
+    const derivedScale = timeScaleFromDeadline(deadline);
 
-    const newTask: TaskItem = {
-      id,
+    const t: TaskItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       date,
       deadline,
-      deadlineShort: formatDeadlineShort(deadline),
       project,
-      text,
-      quad,
-      rDay: daysRemaining(deadline),
-      posAngle: angle,
-      posRadius: radiusFrac,
-      stars: newStars,
-      timeScale,
-      finishDate: undefined,
+      text: text.trim(),
+      stars: derivedStars,
+      posAngle: angleCenter[quad],
+      posRadius,
+      timeScale: derivedScale,
     };
-
-    setTasks([...tasks, newTask]);
-    setActiveId(id);
-    setDate(new Date().toISOString().slice(0, 10));
-    setDeadline("");
-    setProject("");
+    setTasks((prev) => [t, ...prev]);
+    setActiveId(t.id);
     setText("");
+    setProject("");
+    setDeadline("");
+    setWarning(null);
+    setTimeout(() => {
+      const el = itemRefs.current[t.id];
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 40);
   };
 
-  const activeTask = tasks.find((t) => t.id === activeId) || null;
-
-  const handleMouseDown = (
-    e: React.MouseEvent<SVGCircleElement, MouseEvent>,
-    id: string
-  ) => {
-    e.preventDefault();
-    setDragId(id);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
-    if (!dragId) return;
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const rect = svg.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const { angle, radius } = cartesianToPolar(cx, cy, x, y);
-
-    const inner = baseRadius + bandThickness * 0.5;
-    const outer = baseRadius + bandThickness * 3.5;
-
-    const clampedRadius = clamp(radius, inner * 0.2, outer);
-
-    const quad = nearestQuadrant(angle);
-    const quadCountsLocal = computeQuadCounts(tasks);
-    const current = tasks.find((t) => t.id === dragId);
-    if (!current) return;
-
-    if (quadrantForStars(current.stars) !== quad && quadCountsLocal[quad] >= MAX_PER_QUAD) {
-      return;
-    }
-
+  const markDone = (id: string) => {
+    const today = new Date().toISOString().slice(0, 10);
     setTasks((prev) =>
-      prev.map((t) =>
-        t.id === dragId
-          ? {
-              ...t,
-              posAngle: angle,
-              posRadius:
-                clampedRadius / (baseRadius + bandThickness * 3.5),
-              stars: starsForQuadrant(quad),
-              quad,
-            }
-          : t
-      )
+      prev.map((t) => (t.id === id ? { ...t, finishDate: today } : t))
     );
   };
 
-  const handleMouseUp = () => {
-    if (dragId) {
-      setDragId(null);
-    }
+  const removeTask = (id: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    if (activeId === id) setActiveId(null);
   };
 
-  const handleDotClick = (id: string) => {
-    setActiveId(id);
-    const ref = itemRefs.current[id];
-    if (ref && "scrollIntoView" in ref) {
-      ref.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  };
-
-  const handleExportCsv = () => {
-    const csv = toCsv(tasks);
-    const today = new Date().toISOString().slice(0, 10);
-    const fn = `gPlanner_tasks_${today}.csv`;
-    downloadBlob(fn, csv);
-  };
-
-  const handleImportCsv = () => {
-    uploadFromFile((text) => {
-      try {
-        const raw = fromCsv(text);
-        const now = new Date();
-        const placed: TaskItem[] = raw.map((t, i) => {
-          const star = t.stars || computeStarFromDeadline(t.deadline);
-          const quad = t.quad || quadrantForStars(star);
-          const ts = t.timeScale ?? "week";
-          const angle = t.posAngle || quadAngles[quad];
-          const radius =
-            t.posRadius && t.posRadius > 0 && t.posRadius <= 1
-              ? t.posRadius
-              : computeBandRadius(star, t.deadline);
-
-          const dt = new Date(t.date || now.toISOString().slice(0, 10));
-          const dStr = isNaN(dt.getTime())
-            ? now.toISOString().slice(0, 10)
-            : dt.toISOString().slice(0, 10);
-
-          return {
-            id: t.id || `${Date.now()}-${i}`,
-            date: dStr,
-            deadline: t.deadline,
-            deadlineShort: formatDeadlineShort(t.deadline),
-            project: t.project,
-            text: t.text,
-            quad,
-            rDay: daysRemaining(t.deadline),
-            posAngle: angle,
-            posRadius: radius,
-            stars: star,
-            timeScale: ts,
-            finishDate: t.finishDate,
-          };
-        });
-
-        const counts: QuadCounts = { UI: 0, NUI: 0, UNI: 0, NUNI: 0 };
-        const adjusted = placed.map((t) => {
-          const quad = t.quad || quadrantForStars(t.stars);
-          let idx = counts[quad];
-          if (idx >= MAX_PER_QUAD) {
-            return t;
-          }
-          counts[quad] = idx + 1;
-          const bandRadius = computeBandRadius(t.stars, t.deadline);
-          return {
-            ...t,
-            quad,
-            posRadius: bandRadius,
-          };
-        });
-
-        setTasks(adjusted);
-      } catch (e) {
-        console.error("Failed to import CSV", e);
-        setWarning("Failed to import CSV file. Please check its format.");
-      }
-    });
-  };
-
-  const handleClearAll = () => {
-    if (
-      !window.confirm(
-        "Clear all tasks from this planner? This cannot be undone."
-      )
-    ) {
-      return;
-    }
-    setTasks([]);
-    setActiveId(null);
-  };
-
-  const handleDeleteTask = (id: string) => {
-    setTasks(tasks.filter((t) => t.id !== id));
-    if (activeId === id) {
-      setActiveId(null);
-    }
-  };
-
-  const handleMarkFinished = (id: string) => {
-    const today = new Date().toISOString().slice(0, 10);
-    setTasks(
-      tasks.map((t) =>
-        t.id === id ? { ...t, finishDate: t.finishDate || today } : t
-      )
-    );
-  };
-
-  const openEditTask = (t: TaskItem) => {
+  const openEdit = (t: TaskItem) => {
     setEditingTask(t);
     setEditDate(t.date);
     setEditDeadline(t.deadline);
@@ -851,34 +567,125 @@ export default function Planner() {
 
   const saveEdit = () => {
     if (!editingTask) return;
-    const updated = tasks.map((t) =>
-      t.id === editingTask.id
-        ? {
-            ...t,
-            date: editDate,
-            deadline: editDeadline,
-            project: editProject,
-            text: editText,
-            deadlineShort: formatDeadlineShort(editDeadline),
-            rDay: daysRemaining(editDeadline),
-          }
-        : t
+
+    const derivedStars = starsFromDeadline(editDeadline);
+    const quad = quadrantForStars(derivedStars);
+    const currentQuad = quadrantForStars(
+      starsFromDeadline(editingTask.deadline)
     );
-    setTasks(updated);
+    const nextCount = quadCounts[quad] + (quad === currentQuad ? 0 : 1);
+
+    if (nextCount > maxPerQuad[quad]) {
+      setWarning(
+        `${quadLabelByKey[quad]} is full (${quadCounts[quad]}/${maxPerQuad[quad]}). Cannot move this task here.`
+      );
+      return;
+    }
+
+    const posRadius = radiusFromDeadline(editDeadline);
+    const derivedScale = timeScaleFromDeadline(editDeadline);
+
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === editingTask.id
+          ? {
+              ...t,
+              date: editDate,
+              deadline: editDeadline,
+              project: editProject,
+              text: editText,
+              stars: derivedStars,
+              posAngle: angleCenter[quad],
+              posRadius,
+              timeScale: derivedScale,
+            }
+          : t
+      )
+    );
     setEditingTask(null);
+    setWarning(null);
   };
 
-  const openCsvPreview = () => {
-    const csv = toCsv(tasks);
-    setCsvPreview(csv);
-    setCsvPreviewOpen(true);
+  const csvText = (() => {
+    const header = [
+      "index",
+      "id",
+      "date",
+      "deadline",
+      "project",
+      "task",
+      "stars",
+      "quadrant",
+      "timeScale",
+      "posAngle_deg",
+      "posRadius_fraction",
+      "finishDate",
+    ];
+    const rows = tasks.map((t, i) => {
+      const s = starsFromDeadline(t.deadline);
+      const q = quadLabelByKey[quadrantForStars(s)];
+      const ts = timeScaleFromDeadline(t.deadline);
+      return [
+        String(i + 1),
+        t.id,
+        t.date,
+        t.deadline || "",
+        t.project.replaceAll('"', '""'),
+        t.text.replaceAll('"', '""'),
+        String(s),
+        q,
+        ts,
+        String(t.posAngle),
+        String(t.posRadius.toFixed(3)),
+        t.finishDate || "",
+      ];
+    });
+    return [header, ...rows].map((r) => r.join(",")).join("\n");
+  })();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("planner_simple_v3_csv", csvText);
+    } catch {
+      //
+    }
+  }, [csvText]);
+
+  const downloadCSV = () => {
+    const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const safeName =
+      (csvFileName || "planner_tasks").replace(/[^a-zA-Z0-9_\-]/g, "_") +
+      ".csv";
+    a.download = safeName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result ?? "");
+      const imported = parseTasksFromCSV(text);
+      if (imported.length > 0) {
+        setTasks(imported);
+        setActiveId(imported[0].id);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
   const handleShareSchedule = async () => {
     const text = buildShareText(tasks);
     setShareText(text);
 
-    // Try Web Share API (mobile / some browsers)
     if (typeof navigator !== "undefined" && "share" in navigator) {
       try {
         await (navigator as any).share({
@@ -886,12 +693,11 @@ export default function Planner() {
           text,
         });
         return;
-      } catch (err) {
-        console.warn("Web Share failed or cancelled", err);
+      } catch {
+        // fall through
       }
     }
 
-    // Fallback: copy to clipboard if possible
     if (typeof navigator !== "undefined" && navigator.clipboard) {
       try {
         await navigator.clipboard.writeText(text);
@@ -899,538 +705,1014 @@ export default function Planner() {
           "Schedule copied to clipboard – paste into email or chat to share."
         );
         return;
-      } catch (err) {
-        console.warn("Clipboard write failed", err);
+      } catch {
+        // fall through
       }
     }
 
-    // Final fallback: show dialog with text to copy manually
     setShareOpen(true);
   };
 
-  return (
-    <div className="w-full min-h-screen bg-neutral-50 p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-4">
-      {/* LEFT SIDE: New + Selected + Tasks */}
-      <aside className="lg:col-span-4 space-y-4">
-        <Card>
-          <CardContent className="p-4 space-y-3">
-            <div className="text-xl font-semibold">New Task</div>
-            {warning && (
-              <div className="text-xs bg-red-100 text-red-700 border border-red-300 rounded-md px-2 py-1">
-                {warning}
-              </div>
-            )}
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Date</label>
-              <Input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Deadline</label>
-              <Input
-                type="date"
-                value={deadline}
-                onChange={(e) => setDeadline(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Project</label>
-              <Input
-                placeholder="Project name"
-                value={project}
-                onChange={(e) => setProject(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Task</label>
-              <Textarea
-                placeholder="Describe the task..."
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">Region:</span>
-              <StarSelect value={stars} onChange={setStars} />
-            </div>
-            <div className="space-y-1 text-xs text-neutral-600">
-              <div>
-                <span className="text-amber-400">★★★★</span> (1–7 d)
-              </div>
-              <div>
-                <span className="text-amber-400">★★★</span> (1–4 w)
-              </div>
-              <div>
-                <span className="text-amber-400">★★</span> (1–12 m)
-              </div>
-              <div>
-                <span className="text-amber-400">★</span> (1–10 y)
-              </div>
-            </div>
-            <div className="pt-2">
-              <Button
-                type="button"
-                className="w-full"
-                onClick={onAddTask}
-                disabled={!deadline || !text}
-              >
-                Add task
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+  const size = 900;
+  const r = size * 0.48;
+  const cx = size / 2;
+  const cy = size / 2;
+  const maxR = r - 16;
 
-        <Card>
-          <CardContent className="p-4 space-y-2">
-            <div className="text-lg font-semibold">Selected task</div>
-            {activeTask ? (
-              <div className="text-sm space-y-1">
-                <div>
-                  <span className="font-medium">Remaining Time:</span>{" "}
-                  {activeTask.rDay}d (
-                  {activeTask.rDay === "—"
-                    ? "deadline unknown"
-                    : `${activeTask.rDay} days remaining`}
-                  )
+  const dots = (() => {
+    const byQuad: Record<QuadKey, TaskItem[]> = {
+      UI: [],
+      NUI: [],
+      UNI: [],
+      NUNI: [],
+    };
+
+    tasks.forEach((t) => {
+      const s = starsFromDeadline(t.deadline);
+      const q = quadrantForStars(s);
+      byQuad[q].push(t);
+    });
+
+    const placed: {
+      id: string;
+      x: number;
+      y: number;
+      color: string;
+      idx: number;
+      timeScale: TimeScale;
+      label: string;
+      scale: number;
+    }[] = [];
+    let globalIndex = 1;
+
+    (["UI", "NUI", "UNI", "NUNI"] as QuadKey[]).forEach((q) => {
+      const list = byQuad[q];
+      const n = list.length;
+      let scale = 1;
+      if (n >= 8) scale = 0.55;
+      else if (n >= 5) scale = 0.7;
+      else if (n >= 3) scale = 0.85;
+
+      list.forEach((t, i) => {
+        const s = starsFromDeadline(t.deadline);
+        const base = angleCenter[q];
+        const angle = base + (i - (list.length - 1) / 2) * 12;
+        const radFrac = radiusFromDeadline(t.deadline);
+        const rad = radFrac * maxR;
+        const angRad = (angle * Math.PI) / 180;
+        const x = cx + rad * Math.cos(angRad);
+        const y = cy - rad * Math.sin(angRad);
+        const dNum = daysRemainingNumber(t.deadline);
+        const bucket = bucketFromDays(dNum);
+        const computedScale = timeScaleFromBucket(bucket);
+
+        placed.push({
+          id: t.id,
+          x,
+          y,
+          color: starColor(s),
+          idx: globalIndex++,
+          timeScale: computedScale,
+          label: bucket.label,
+          scale,
+        });
+      });
+    });
+    return placed;
+  })();
+
+  const activeTask = activeId ? tasks.find((t) => t.id === activeId) : null;
+  let activeBucket: TimeBucket | null = null;
+  let activeDaysNumber: number | null = null;
+  if (activeTask) {
+    activeDaysNumber = daysRemainingNumber(activeTask.deadline);
+    activeBucket = bucketFromDays(activeDaysNumber);
+  }
+
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
+    if (!dragId) return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const dx = mx - cx;
+    const dy = my - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const radiusFrac = Math.max(0, Math.min(1, dist / maxR));
+
+    let newQuad: QuadKey;
+    if (mx <= cx && my <= cy) {
+      newQuad = "UI";
+    } else if (mx >= cx && my <= cy) {
+      newQuad = "NUI";
+    } else if (mx <= cx && my >= cy) {
+      newQuad = "UNI";
+    } else {
+      newQuad = "NUNI";
+    }
+
+    const newStars: Stars =
+      newQuad === "UI" ? 4 : newQuad === "NUI" ? 3 : newQuad === "UNI" ? 2 : 1;
+
+    const currentTask = tasks.find((t) => t.id === dragId);
+    if (currentTask) {
+      const currentStars = starsFromDeadline(currentTask.deadline);
+      const currentQuad = quadrantForStars(currentStars);
+      if (newQuad !== currentQuad && quadCounts[newQuad] >= maxPerQuad[newQuad]) {
+        return;
+      }
+    }
+
+    const N = unitsPerStars(newStars);
+    const idx = clamp(Math.floor(radiusFrac * N) + 1, 1, N);
+    const newBucket = bucketFromStarsAndIndex(newStars, idx);
+    const newDaysRemaining = daysFromBucket(newBucket);
+
+    const today = new Date();
+    const base = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate()
+    );
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const deadlineMs = base.getTime() + newDaysRemaining * msPerDay;
+    const newDeadlineDate = new Date(deadlineMs);
+    const iso = newDeadlineDate.toISOString().slice(0, 10);
+
+    const dyPolar = cy - my;
+    const angleRaw = (Math.atan2(dyPolar, dx) * 180) / Math.PI;
+    let angle = angleRaw;
+    if (angle < 0) angle += 360;
+
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id !== dragId) return t;
+
+        const derivedStars = starsFromDeadline(iso);
+        const newScale = timeScaleFromDeadline(iso);
+        const newRadiusFromDeadline = radiusFromDeadline(iso);
+
+        return {
+          ...t,
+          posAngle: angle,
+          posRadius: newRadiusFromDeadline,
+          stars: derivedStars,
+          deadline: iso,
+          timeScale: newScale,
+        };
+      })
+    );
+  };
+
+  const handleCapacityChange = (key: QuadKey, value: string) => {
+    const parsed = parseInt(value, 10);
+    if (Number.isNaN(parsed) || parsed < 1) return;
+    setMaxPerQuad((prev) => ({ ...prev, [key]: parsed }));
+  };
+
+  const activeDaysNumberLabel =
+    activeDaysNumber != null ? `${activeDaysNumber} days remaining` : "";
+
+  const quadCountsLabelColor = (
+    exceeds: boolean,
+    base: string = "text-slate-700"
+  ) => (exceeds ? "text-red-600" : base);
+
+  const csvFileLabel = `CSV export: ${csvFileName || "planner_tasks"}_YYYY-MM-DD.csv`;
+
+  return (
+    <div className="w-full min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
+      <div className="max-w-[1800px] mx-auto px-4 py-6 lg:px-8 lg:py-8">
+        <div className="flex items-baseline justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-slate-900">
+              gPlanner
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Geometry-based priority planner with time-to-deadline encoding.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-row gap-6 items-start">
+          {/* LEFT COLUMN */}
+          <div
+            className="flex flex-col w-[360px] justify-between"
+            style={{ height: size }}
+          >
+            <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm">
+              <CardContent className="p-4 space-y-3">
+                <div className="text-xl font-semibold text-slate-900">
+                  New task
                 </div>
-                <div>
-                  <span className="font-medium">Project:</span>{" "}
-                  {activeTask.project || "Untitled"}
-                </div>
-                <div>
-                  <span className="font-medium">Task:</span> {activeTask.text}
-                </div>
-                <div>
-                  <span className="font-medium">Date:</span> {activeTask.date}
-                </div>
-                <div>
-                  <span className="font-medium">Deadline:</span>{" "}
-                  {activeTask.deadline || "—"}
-                </div>
-                <div>
-                  <span className="font-medium">Region:</span>{" "}
-                  {quadLabelByKey[activeTask.quad]}
-                </div>
-                <div>
-                  <span className="font-medium">Time scale:</span>{" "}
-                  {timeScaleLabel[activeTask.timeScale]}
-                </div>
-                {activeTask.finishDate && (
-                  <div>
-                    <span className="font-medium">Finished:</span>{" "}
-                    {activeTask.finishDate}
+                {warning && (
+                  <div className="text-xs bg-red-50 text-red-700 border border-red-200 rounded-md px-2 py-1">
+                    {warning}
                   </div>
                 )}
-              </div>
-            ) : (
-              <div className="text-sm text-neutral-500">
-                Click a dot in the planner or a task below.
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-lg font-semibold">Tasks</div>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  title="Share schedule"
-                  onClick={handleShareSchedule}
-                >
-                  <Share2 className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  title="Preview CSV"
-                  onClick={openCsvPreview}
-                >
-                  <Download className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  title="Import CSV"
-                  onClick={handleImportCsv}
-                >
-                  <span className="text-xs font-semibold">CSV</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  title="Clear all tasks"
-                  onClick={handleClearAll}
-                >
-                  <Trash2 className="w-4 h-4 text-red-500" />
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-1 text-xs text-neutral-700">
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <span>
-                  <span className="font-semibold">UI:</span>{" "}
-                  {quadCounts.UI}/{MAX_PER_QUAD}
-                </span>
-                <span>
-                  <span className="font-semibold">NUI:</span>{" "}
-                  {quadCounts.NUI}/{MAX_PER_QUAD}
-                </span>
-                <span>
-                  <span className="font-semibold">UNI:</span>{" "}
-                  {quadCounts.UNI}/{MAX_PER_QUAD}
-                </span>
-                <span>
-                  <span className="font-semibold">NUNI:</span>{" "}
-                  {quadCounts.NUNI}/{MAX_PER_QUAD}
-                </span>
-              </div>
-            </div>
-            <div className="space-y-1 text-xs text-neutral-600">
-              <div>CSV export: gPlanner_tasks_YYYY-MM-DD.csv</div>
-            </div>
-            <div className="border-t pt-2 mt-2 space-y-1 max-h-[260px] overflow-y-auto">
-              {tasks.length === 0 ? (
-                <div className="text-xs text-neutral-500">
-                  No tasks yet. Add one above.
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Date
+                  </label>
+                  <Input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                  />
                 </div>
-              ) : (
-                tasks.map((t, i) => (
-                  <div
-                    key={t.id}
-                    ref={(el) => {
-                      itemRefs.current[t.id] = el;
-                    }}
-                    onClick={() => handleDotClick(t.id)}
-                    className={`rounded-md border px-2 py-1.5 mb-1 text-xs cursor-pointer ${
-                      t.id === activeId
-                        ? "bg-amber-50 border-amber-400"
-                        : "bg-white hover:bg-neutral-50 border-neutral-200"
-                    }`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <div className="font-semibold truncate">
-                        {t.project || "Untitled"}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] px-1 py-0.5 rounded bg-neutral-800 text-white">
-                          {i + 1}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="truncate">{t.text}</div>
-                    <div className="flex justify-between text-[11px] text-neutral-700">
-                      <div>{formatLocalDate(t.date)}</div>
-                      <div>{quadLabelByKey[t.quad]}</div>
-                    </div>
-                    <div className="text-[11px] text-neutral-700">
-                      Remaining: {t.rDay} d
-                    </div>
-                    <div className="text-[11px] text-neutral-700">
-                      Deadline: {formatDeadlineShort(t.deadline)}
-                    </div>
-                    {t.finishDate && (
-                      <div className="text-[11px] text-green-700">
-                        Finished: {t.finishDate}
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Deadline
+                  </label>
+                  <Input
+                    type="date"
+                    value={deadline}
+                    onChange={(e) => setDeadline(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Project
+                  </label>
+                  <Input
+                    value={project}
+                    onChange={(e) => setProject(e.target.value)}
+                    placeholder="Project name"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Task
+                  </label>
+                  <Textarea
+                    rows={3}
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    placeholder="Describe the task…"
+                  />
+                </div>
+                <div className="text-xs text-slate-600 space-y-1 border-t border-slate-100 pt-2">
+                  <div>
+                    <span className="text-amber-400">★★★★</span> Important –
+                    Urgent
+                  </div>
+                  <div>
+                    <span className="text-amber-400">★★★</span> Important – Not
+                    urgent
+                  </div>
+                  <div>
+                    <span className="text-amber-400">★★</span> Not important –
+                    Urgent
+                  </div>
+                  <div>
+                    <span className="text-amber-400">★</span> Not important –
+                    Not urgent
+                  </div>
+                </div>
+                <Button
+                  className="w-full mt-2 bg-slate-900 hover:bg-slate-800"
+                  onClick={addTask}
+                >
+                  Add task
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* SELECTED TASK */}
+            <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm">
+              <CardContent className="p-4 space-y-2">
+                <div className="text-lg font-semibold text-slate-900">
+                  Selected task
+                </div>
+                {activeTask ? (
+                  <div className="text-sm space-y-1 text-slate-800">
+                    {activeBucket && (
+                      <div>
+                        <span className="font-medium">Remaining Time:</span>{" "}
+                        {activeBucket.label}
+                        {activeDaysNumberLabel
+                          ? ` (${activeDaysNumberLabel})`
+                          : ""}
                       </div>
                     )}
-                    <div className="mt-1 flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[10px]"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEditTask(t);
-                        }}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[10px]"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleMarkFinished(t.id);
-                        }}
-                      >
-                        Done
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[10px] text-red-600 border-red-300"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteTask(t.id);
-                        }}
-                      >
-                        Del
-                      </Button>
+                    <div>
+                      <span className="font-medium">Project:</span>{" "}
+                      {activeTask.project || "Untitled"}
+                    </div>
+                    <div>
+                      <span className="font-medium">Task:</span>{" "}
+                      {activeTask.text}
+                    </div>
+                    <div>
+                      <span className="font-medium">Date:</span>{" "}
+                      {activeTask.date}
+                    </div>
+                    <div>
+                      <span className="font-medium">Deadline:</span>{" "}
+                      {formatDeadlineMMDDYYYY(activeTask.deadline)}
+                    </div>
+                    <div>
+                      <span className="font-medium">Region:</span>{" "}
+                      <span className="text-amber-400">
+                        {"★".repeat(
+                          starsFromDeadline(activeTask.deadline) || 1
+                        )}
+                      </span>{" "}
+                      {
+                        quadLabelByKey[
+                          quadrantForStars(
+                            starsFromDeadline(activeTask.deadline)
+                          )
+                        ]
+                      }
+                    </div>
+                    {activeTask.finishDate && (
+                      <div>
+                        <span className="font-medium">Finished:</span>{" "}
+                        {activeTask.finishDate}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-500">
+                    Click a dot in the planner or a task on the right.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* CENTER – PLANNER */}
+          <div
+            className="relative flex-shrink-0"
+            style={{ width: size, height: size }}
+          >
+            {/* Top urgency labels */}
+            <div
+              className="absolute bg-slate-900 text-white rounded-md py-1 text-center text-base font-semibold shadow-sm"
+              style={{ left: cx - r, top: cy - r - 32, width: r }}
+            >
+              <div className="flex items-center justify-center gap-1">
+                <StarSVG size={14} />
+                <StarSVG size={14} />
+                <span>Urgent</span>
+              </div>
+            </div>
+            <div
+              className="absolute bg-slate-900 text-white rounded-md py-1 text-center text-base font-semibold shadow-sm"
+              style={{ left: cx, top: cy - r - 32, width: r }}
+            >
+              <div className="flex items-center justify-center gap-1">
+                <StarSVG size={14} />
+                <span>Not urgent</span>
+              </div>
+            </div>
+
+            {/* 25/50/75 labels */}
+            {(() => {
+              const specs: { label: string; frac: number }[] = [
+                { label: "75%", frac: 0.25 },
+                { label: "50%", frac: 0.5 },
+                { label: "25%", frac: 0.75 },
+              ];
+              return specs.map(({ label, frac }) => {
+                const rr = maxR * frac;
+                const yRing = cy - rr;
+                const top = yRing - 14;
+                return (
+                  <div
+                    key={label}
+                    className="absolute flex items-center justify-center"
+                    style={{
+                      left: cx - 40,
+                      top,
+                      width: 80,
+                    }}
+                  >
+                    <span
+                      className="px-3 py-0.5 rounded-full text-white font-semibold text-base shadow-sm"
+                      style={{ backgroundColor: "#8b5cf6" }}
+                    >
+                      {label}
+                    </span>
+                  </div>
+                );
+              });
+            })()}
+
+            {/* Importance labels */}
+            <div
+              className="absolute bg-slate-900 text-white rounded-md px-2 py-1 flex items-center justify-center text-base font-semibold shadow-sm"
+              style={{ left: cx - r - 52, top: cy - r, height: r }}
+            >
+              <div className="flex flex-col items-center gap-1">
+                <div className="flex flex-col items-center gap-0.5">
+                  <StarSVG size={14} />
+                  <StarSVG size={14} />
+                </div>
+                <div
+                  style={{
+                    writingMode: "vertical-rl",
+                    transform: "rotate(180deg)",
+                  }}
+                >
+                  Important
+                </div>
+              </div>
+            </div>
+            <div
+              className="absolute bg-slate-900 text-white rounded-md px-2 py-1 flex items-center justify-center text-base font-semibold shadow-sm"
+              style={{ left: cx - r - 52, top: cy, height: r }}
+            >
+              <div className="flex flex-col items-center gap-1">
+                <div className="flex flex-col items-center gap-0.5">
+                  {/* Not important label star stays white */}
+                  <StarSVG size={14} color="#ffffff" />
+                </div>
+                <div
+                  style={{
+                    writingMode: "vertical-rl",
+                    transform: "rotate(180deg)",
+                  }}
+                >
+                  Not important
+                </div>
+              </div>
+            </div>
+
+            <svg
+              ref={svgRef}
+              width={size}
+              height={size}
+              className="rounded-3xl shadow-xl bg-white"
+              style={{ touchAction: "none" }}
+              onMouseMove={handleMouseMove}
+              onMouseUp={() => setDragId(null)}
+              onMouseLeave={() => setDragId(null)}
+            >
+              <circle
+                cx={cx}
+                cy={cy}
+                r={r}
+                fill="#d1d5db"
+                stroke="#e5e7eb"
+                strokeWidth={2}
+              />
+              <line
+                x1={cx}
+                y1={cy - r}
+                x2={cx}
+                y2={cy + r}
+                stroke="#e5e7eb"
+                strokeWidth={2}
+              />
+              <line
+                x1={cx - r}
+                y1={cy}
+                x2={cx + r}
+                y2={cy}
+                stroke="#e5e7eb"
+                strokeWidth={2}
+              />
+
+              {[0.25, 0.5, 0.75].map((frac, idx) => {
+                const rr = maxR * frac;
+                return (
+                  <circle
+                    key={idx}
+                    cx={cx}
+                    cy={cy}
+                    r={rr}
+                    fill="none"
+                    stroke="#f9fafb"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 6"
+                  />
+                );
+              })}
+
+              {dots.map((d) => {
+                const dotR = timeScaleDotRadius(d.timeScale) * d.scale;
+                return (
+                  <g
+                    key={d.id}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setDragId(d.id);
+                      setActiveId(d.id);
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveId(d.id);
+                      setTimeout(() => {
+                        const el = itemRefs.current[d.id];
+                        el?.scrollIntoView({
+                          behavior: "smooth",
+                          block: "center",
+                        });
+                      }, 40);
+                    }}
+                    style={{ cursor: "grab" }}
+                  >
+                    <circle
+                      cx={d.x}
+                      cy={d.y}
+                      r={dotR}
+                      fill={d.color}
+                      stroke={d.color}
+                      strokeWidth={1.5}
+                    />
+                    <text
+                      x={d.x}
+                      y={d.y + 6}
+                      textAnchor="middle"
+                      fontSize={18}
+                      fill="#ffffff"
+                      fontWeight="bold"
+                      stroke="#111827"
+                      strokeWidth={1.2}
+                      paintOrder="stroke"
+                      style={{ pointerEvents: "none", userSelect: "none" }}
+                    >
+                      {d.label}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+
+          {/* RIGHT COLUMN */}
+          <div
+            className="flex flex-col w-[360px] justify-between"
+            style={{ height: size }}
+          >
+            <Card className="shadow-md border border-slate-200/80 bg-white/95 backdrop-blur-sm">
+              <CardContent className="p-3 text-xs text-slate-800 space-y-1">
+                <div className="font-semibold text-[11px] mb-1 tracking-wide text-slate-700">
+                  Geometry Time
+                </div>
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <svg width="18" height="18" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="7" fill="#38bdf8" />
+                  </svg>
+                  <span>Years (1y–10y)</span>
+                </div>
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <svg width="18" height="18" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="7" fill="#22c55e" />
+                  </svg>
+                  <span>Months (1m–12m)</span>
+                </div>
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <svg width="18" height="18" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="7" fill="#f97316" />
+                  </svg>
+                  <span>Weeks (1w–4w)</span>
+                </div>
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <svg width="18" height="18" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="7" fill="#ef4444" />
+                  </svg>
+                  <span>Days (1d–7d)</span>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm flex-1">
+              <CardContent className="p-4 space-y-3 h-full flex flex-col">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="text-lg font-semibold text-slate-900">
+                    Tasks
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="Load CSV"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="h-7 w-10 border-slate-300"
+                    >
+                      <span className="text-[10px] font-bold">LOAD</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="Preview CSV"
+                      onClick={() => setCsvOpen(true)}
+                      className="h-7 w-10 border-slate-300"
+                    >
+                      <span className="text-xs font-bold">CSV</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="Share schedule"
+                      onClick={handleShareSchedule}
+                      className="h-7 w-10 border-slate-300"
+                    >
+                      <Share2 className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="Download CSV"
+                      onClick={downloadCSV}
+                      className="h-7 w-10 border-slate-300"
+                    >
+                      <Download className="w-4 h-4" />
+                    </Button>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      ref={fileInputRef}
+                      className="hidden"
+                      onChange={handleImportCSV}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="font-semibold text-slate-700">
+                    Max tasks / region
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex items-center gap-1">
+                      <span className="text-amber-400">★★★★</span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={maxPerQuad.UI}
+                        onChange={(e) =>
+                          handleCapacityChange("UI", e.target.value)
+                        }
+                        className="h-7 w-16 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-amber-400">★★★</span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={maxPerQuad.NUI}
+                        onChange={(e) =>
+                          handleCapacityChange("NUI", e.target.value)
+                        }
+                        className="h-7 w-16 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-amber-400">★★</span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={maxPerQuad.UNI}
+                        onChange={(e) =>
+                          handleCapacityChange("UNI", e.target.value)
+                        }
+                        className="h-7 w-16 text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-amber-400">★</span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={maxPerQuad.NUNI}
+                        onChange={(e) =>
+                          handleCapacityChange("NUNI", e.target.value)
+                        }
+                        className="h-7 w-16 text-xs"
+                      />
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </aside>
+                </div>
 
-      {/* CENTER: Planner */}
-      <main className="lg:col-span-8 flex items-center justify-center mt-2 lg:mt-0">
-        <div
-          ref={canvasRef}
-          className="relative w-full max-w-[540px] bg-neutral-200/40 rounded-2xl border border-neutral-300"
-        >
-          <svg
-            ref={svgRef}
-            width={size}
-            height={size}
-            viewBox={`0 0 ${size} ${size}`}
-            className="block mx-auto"
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-          >
-            <circle
-              cx={cx}
-              cy={cy}
-              r={baseRadius + bandThickness * 3.5}
-              fill="#e5e7eb"
-            />
-            <circle
-              cx={cx}
-              cy={cy}
-              r={baseRadius + bandThickness * 2.5}
-              fill="#e5e7eb"
-            />
-            <circle
-              cx={cx}
-              cy={cy}
-              r={baseRadius + bandThickness * 1.5}
-              fill="#e5e7eb"
-            />
-            <circle
-              cx={cx}
-              cy={cy}
-              r={baseRadius + bandThickness * 0.5}
-              fill="#e5e7eb"
-            />
-
-            <line
-              x1={cx}
-              y1={cy - (baseRadius + bandThickness * 3.5)}
-              x2={cx}
-              y2={cy + (baseRadius + bandThickness * 3.5)}
-              stroke="#4b5563"
-              strokeWidth={1}
-              strokeDasharray="4 4"
-            />
-            <line
-              x1={cx - (baseRadius + bandThickness * 3.5)}
-              y1={cy}
-              x2={cx + (baseRadius + bandThickness * 3.5)}
-              y2={cy}
-              stroke="#4b5563"
-              strokeWidth={1}
-              strokeDasharray="4 4"
-            />
-
-            <text
-              x={cx}
-              y={cy - (baseRadius + bandThickness * 3.5) - 8}
-              textAnchor="middle"
-              className="fill-black text-[11px] font-semibold"
-            >
-              Urgent
-            </text>
-            <text
-              x={cx}
-              y={cy + (baseRadius + bandThickness * 3.5) + 14}
-              textAnchor="middle"
-              className="fill-black text-[11px] font-semibold"
-            >
-              Not urgent
-            </text>
-            <text
-              x={cx - (baseRadius + bandThickness * 3.5) - 4}
-              y={cy}
-              textAnchor="end"
-              className="fill-black text-[11px] font-semibold"
-            >
-              Not important
-            </text>
-            <text
-              x={cx + (baseRadius + bandThickness * 3.5) + 4}
-              y={cy}
-              textAnchor="start"
-              className="fill-black text-[11px] font-semibold"
-            >
-              Important
-            </text>
-
-            {tasks.map((t) => {
-              const radius =
-                t.posRadius *
-                (baseRadius + bandThickness * 3.5);
-              const pos = polarToCartesian(cx, cy, radius, t.posAngle);
-              const baseR = timeScaleDotRadius(t.timeScale);
-              const scale = dotScaleById[t.id] ?? 1;
-              const r = baseR * scale;
-
-              return (
-                <g key={t.id}>
-                  <circle
-                    cx={pos.x}
-                    cy={pos.y}
-                    r={r}
-                    fill={t.id === activeId ? "#1f2937" : "#111827"}
-                    stroke="#facc15"
-                    strokeWidth={t.id === activeId ? 2 : 1.2 * scale}
-                    onMouseDown={(e) => handleMouseDown(e, t.id)}
-                    onClick={() => handleDotClick(t.id)}
-                    cursor="pointer"
-                  />
-                  <text
-                    x={pos.x}
-                    y={pos.y + 3}
-                    textAnchor="middle"
-                    className="fill-white text-[10px] font-semibold pointer-events-none"
+                <div className="space-y-1 text-xs text-slate-700 border-t border-slate-100 pt-2">
+                  <div
+                    className={quadCountsLabelColor(
+                      quadCounts.UI > maxPerQuad.UI
+                    )}
                   >
-                    {t.rDay}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
+                    <span className="text-amber-400">★★★★</span> (1–7 d):{" "}
+                    {quadCounts.UI}/{maxPerQuad.UI}
+                  </div>
+                  <div
+                    className={quadCountsLabelColor(
+                      quadCounts.NUI > maxPerQuad.NUI
+                    )}
+                  >
+                    <span className="text-amber-400">★★★</span> (1–4 w):{" "}
+                    {quadCounts.NUI}/{maxPerQuad.NUI}
+                  </div>
+                  <div
+                    className={quadCountsLabelColor(
+                      quadCounts.UNI > maxPerQuad.UNI
+                    )}
+                  >
+                    <span className="text-amber-400">★★</span> (1–12 m):{" "}
+                    {quadCounts.UNI}/{maxPerQuad.UNI}
+                  </div>
+                  <div
+                    className={quadCountsLabelColor(
+                      quadCounts.NUNI > maxPerQuad.NUNI
+                    )}
+                  >
+                    <span className="text-amber-400">★</span> (1–10 y):{" "}
+                    {quadCounts.NUNI}/{maxPerQuad.NUNI}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    {csvFileLabel}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-500">
+                    CSV file name (folder is chosen by your browser / system)
+                  </label>
+                  <Input
+                    value={csvFileName}
+                    onChange={(e) => setCsvFileName(e.target.value)}
+                    placeholder="planner_tasks"
+                    className="h-8 text-xs"
+                  />
+                </div>
+
+                <div className="space-y-2 max-h-[260px] overflow-auto flex-1">
+                  {tasks.length === 0 && (
+                    <div className="text-sm text-slate-500">
+                      No tasks yet.
+                    </div>
+                  )}
+                  {tasks.map((t, i) => {
+                    const s = starsFromDeadline(t.deadline);
+                    const dNum = daysRemainingNumber(t.deadline);
+                    const b = bucketFromDays(dNum);
+                    return (
+                      <div
+                        key={t.id}
+                        ref={(el) => {
+                          itemRefs.current[t.id] = el;
+                        }}
+                        onClick={() => setActiveId(t.id)}
+                        className={
+                          "rounded-xl border p-2 text-sm flex items-start justify-between gap-2 cursor-pointer transition-colors " +
+                          (activeId === t.id
+                            ? "border-amber-400 bg-amber-50/10"
+                            : "border-slate-700 bg-slate-900/60 hover:bg-slate-800/80")
+                        }
+                      >
+                        <div className="text-[11px] text-slate-200">
+                          <div>
+                            rT: {b.label}
+                            {dNum != null && ` (${dNum}d)`}
+                          </div>
+                          <div>dL: {formatDeadlineMMDDYYYY(t.deadline)}</div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="inline-flex items-center justify-center w-5 h-5 text-[11px] font-bold rounded-full bg-slate-900 text-white border border-slate-600">
+                              {i + 1}
+                            </span>
+                            <div className="font-medium truncate text-slate-50">
+                              {t.text}
+                            </div>
+                          </div>
+                          <div className="text-xs text-slate-300 truncate">
+                            {t.project || "Untitled"} · {t.date}
+                          </div>
+                          <div className="text-xs text-slate-300 flex items-center gap-2">
+                            <span>Region:</span>
+                            <StarRow stars={s} />
+                            <span className="truncate">
+                              {
+                                quadLabelByKey[
+                                  quadrantForStars(
+                                    starsFromDeadline(t.deadline)
+                                  )
+                                ]
+                              }
+                            </span>
+                          </div>
+                          {t.finishDate && (
+                            <div className="text-[11px] text-slate-300 truncate">
+                              Done: {t.finishDate}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-1 items-end">
+                          <button
+                            className="px-2 py-0.5 text-[11px] border border-slate-300 rounded bg-slate-50 text-slate-800 hover:bg-slate-100"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEdit(t);
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="px-2 py-0.5 text-[11px] border border-slate-300 rounded bg-slate-50 text-slate-800 hover:bg-slate-100"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markDone(t.id);
+                            }}
+                          >
+                            Done
+                          </button>
+                          <button
+                            className="p-1 hover:bg-rose-50 rounded"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeTask(t.id);
+                            }}
+                            title="Delete"
+                          >
+                            <Trash2 className="w-3 h-3 text-rose-500" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </div>
-      </main>
 
-      {/* CSV preview dialog */}
-      <Dialog open={csvPreviewOpen} onOpenChange={setCsvPreviewOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>CSV Preview</DialogTitle>
-            <DialogDescription>
-              This is the CSV that will be used for export/import.
-            </DialogDescription>
-          </DialogHeader>
-          <pre className="mt-2 max-h-[400px] overflow-auto text-xs bg-neutral-900 text-neutral-100 p-3 rounded-md">
-            {csvPreview}
-          </pre>
-          <div className="mt-4 flex justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setCsvPreviewOpen(false)}
-            >
-              Close
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit task dialog */}
-      <Dialog
-        open={!!editingTask}
-        onOpenChange={(open) => !open && setEditingTask(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Task</DialogTitle>
-          </DialogHeader>
-          {editingTask && (
-            <div className="space-y-3 mt-2">
-              <div className="space-y-1">
-                <label className="text-sm font-medium">Date</label>
-                <Input
-                  type="date"
-                  value={editDate}
-                  onChange={(e) => setEditDate(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium">Deadline</label>
-                <Input
-                  type="date"
-                  value={editDeadline}
-                  onChange={(e) => setEditDeadline(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium">Project</label>
-                <Input
-                  value={editProject}
-                  onChange={(e) => setEditProject(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium">Task</label>
-                <Textarea
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setEditingTask(null)}
-                >
-                  Cancel
-                </Button>
-                <Button type="button" onClick={saveEdit}>
-                  Save
-                </Button>
-              </div>
+        {/* Initial setup dialog */}
+        <Dialog open={initialSetupOpen} onOpenChange={setInitialSetupOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Start your schedule</DialogTitle>
+              <DialogDescription>
+                Begin with a new empty schedule, or load an existing CSV file.
+                Your data stays in this browser; CSV exports are saved by your
+                browser to your usual downloads folder.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  try {
+                    localStorage.setItem(
+                      "planner_initial_choice_done",
+                      "new"
+                    );
+                  } catch {
+                    //
+                  }
+                  setInitialSetupOpen(false);
+                }}
+              >
+                Start new schedule
+              </Button>
+              <Button
+                onClick={() => {
+                  try {
+                    localStorage.setItem(
+                      "planner_initial_choice_done",
+                      "import"
+                    );
+                  } catch {
+                    //
+                  }
+                  setInitialSetupOpen(false);
+                  fileInputRef.current?.click();
+                }}
+              >
+                Load from CSV
+              </Button>
             </div>
-          )}
-        </DialogContent>
-      </Dialog>
+          </DialogContent>
+        </Dialog>
 
-      {/* Share dialog fallback */}
-      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Share schedule</DialogTitle>
-            <DialogDescription>
-              Copy this text and send it via email, chat, or notes.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            className="mt-2 h-64 text-xs"
-            value={shareText}
-            readOnly
-          />
-          <div className="mt-3 flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                if (
-                  typeof navigator !== "undefined" &&
-                  navigator.clipboard
-                ) {
-                  navigator.clipboard.writeText(shareText);
-                }
-                setShareOpen(false);
-              }}
-            >
-              Copy & close
-            </Button>
-            <Button type="button" onClick={() => setShareOpen(false)}>
-              Close
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        {/* CSV Preview dialog */}
+        <Dialog open={csvOpen} onOpenChange={setCsvOpen}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>CSV preview</DialogTitle>
+              <DialogDescription>
+                This is exactly what will be saved when you download.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[60vh] overflow-auto mt-2">
+              <pre className="text-xs whitespace-pre bg-slate-50 p-3 rounded border border-slate-200">
+                {csvText}
+              </pre>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Share dialog fallback */}
+        <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Share schedule</DialogTitle>
+              <DialogDescription>
+                Copy this text and send it via email, chat, or notes.
+              </DialogDescription>
+            </DialogHeader>
+            <Textarea
+              className="mt-2 h-64 text-xs"
+              value={shareText}
+              readOnly
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  if (
+                    typeof navigator !== "undefined" &&
+                    navigator.clipboard
+                  ) {
+                    navigator.clipboard.writeText(shareText);
+                  }
+                  setShareOpen(false);
+                }}
+              >
+                Copy & close
+              </Button>
+              <Button type="button" onClick={() => setShareOpen(false)}>
+                Close
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Edit task dialog */}
+        <Dialog
+          open={!!editingTask}
+          onOpenChange={(open) => {
+            if (!open) setEditingTask(null);
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit task</DialogTitle>
+            </DialogHeader>
+            {editingTask && (
+              <div className="space-y-3 mt-2">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Date
+                  </label>
+                  <Input
+                    type="date"
+                    value={editDate}
+                    onChange={(e) => setEditDate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Deadline
+                  </label>
+                  <Input
+                    type="date"
+                    value={editDeadline}
+                    onChange={(e) => setEditDeadline(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Project
+                  </label>
+                  <Input
+                    value={editProject}
+                    onChange={(e) => setEditProject(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">
+                    Task
+                  </label>
+                  <Textarea
+                    rows={3}
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditingTask(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="button" onClick={saveEdit}>
+                    Save
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+      </div>
     </div>
   );
 }
