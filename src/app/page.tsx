@@ -1343,16 +1343,18 @@ export default function Planner() {
                     return (
                       <div
                         key={t.id}
-                        ref={(el) => (itemRefs.current[t.id] = el)}
+                        ref={(el) => {
+                          itemRefs.current[t.id] = el;
+                        }}
                         onClick={() => setActiveId(t.id)}
                         className={
                           "rounded-xl border p-2 text-sm flex items-start justify-between gap-2 cursor-pointer transition-colors " +
-                          (t.id === activeId
-                            ? "border-slate-900 bg-slate-50"
-                            : "border-slate-200 hover:bg-slate-50/60")
+                          (activeId === t.id
+                            ? "border-amber-400 bg-amber-50/10"
+                            : "border-slate-700 bg-slate-900/60 hover:bg-slate-800/80")
                         }
-                      >
-                        <div>
+                        >
+                        <div className="text-[11px] text-slate-700">
                           <div className="text-[11px] text-slate-700">
                             rD: {b.label}
                             {dNum != null && ` (${dNum}d)`}
