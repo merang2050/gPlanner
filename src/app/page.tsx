@@ -762,6 +762,7 @@ export default function Planner() {
   const cy = size / 2;
   const maxR = r - 16;
 
+  // --------- NEW DOT PLACEMENT WITH PER-BAND SPREAD ----------
   const dots = (() => {
     const byQuad: Record<QuadKey, TaskItem[]> = {
       UI: [],
@@ -799,38 +800,74 @@ export default function Planner() {
       else if (n >= 6) globalScale = 0.6;
       else if (n >= 3) globalScale = 0.8;
 
-      list.forEach((t, i) => {
-        const s = starsFromDeadline(t.deadline);
-        const base = angleCenter[q];
-        const angle = base + (i - (list.length - 1) / 2) * 12;
-        const radFrac = radiusFromDeadline(t.deadline);
-        const rad = radFrac * maxR;
-        const angRad = (angle * Math.PI) / 180;
-        const x = cx + rad * Math.cos(angRad);
-        const y = cy - rad * Math.sin(angRad);
+      if (n === 0) return;
+
+      // Group tasks in this quadrant by discrete time band (unitIndex)
+      interface Entry {
+        t: TaskItem;
+        radFrac: number;
+        bucket: TimeBucket;
+        dNum: number | null;
+      }
+      const byBand = new Map<number, Entry[]>();
+
+      list.forEach((t) => {
         const dNum = daysRemainingNumber(t.deadline);
         const bucket = bucketFromDays(dNum);
-        const computedScale = timeScaleFromBucket(bucket);
-
-        // NEW: inner (more urgent) = slightly bigger, outer = slightly smaller
-        // radFrac ~ 0 -> ~0.9, radFrac ~ 1 -> ~0.65
-        const ringScale = 0.9 - 0.25 * radFrac;
-        const combinedScale = globalScale * ringScale;
-
-        placed.push({
-          id: t.id,
-          x,
-          y,
-          color: starColor(s),
-          idx: globalIndex++,
-          timeScale: computedScale,
-          label: bucket.label,
-          scale: combinedScale,
-        });
+        const radFrac = radiusFromDeadline(t.deadline);
+        const key = bucket.unitIndex;
+        const arr = byBand.get(key) ?? [];
+        arr.push({ t, radFrac, bucket, dNum });
+        byBand.set(key, arr);
       });
+
+      const base = angleCenter[q];
+      const fullRange = 60; // degrees of spread within quadrant for a band
+      const halfRange = fullRange / 2;
+
+      for (const bandEntries of byBand.values()) {
+        const m = bandEntries.length;
+        // stable order for consistency
+        bandEntries.sort((a, b) => a.t.id.localeCompare(b.t.id));
+
+        bandEntries.forEach((entry, j) => {
+          const { t, radFrac, bucket, dNum } = entry;
+          const s = starsFromDeadline(t.deadline);
+
+          let angle: number;
+          if (m === 1) {
+            angle = base;
+          } else {
+            const step = fullRange / (m - 1);
+            angle = base - halfRange + j * step;
+          }
+
+          const rad = radFrac * maxR;
+          const angRad = (angle * Math.PI) / 180;
+          const x = cx + rad * Math.cos(angRad);
+          const y = cy - rad * Math.sin(angRad);
+          const computedScale = timeScaleFromBucket(bucket);
+
+          // Inner (urgent) a bit bigger; outer a bit smaller
+          const ringScale = 0.9 - 0.25 * radFrac;
+          const combinedScale = globalScale * ringScale;
+
+          placed.push({
+            id: t.id,
+            x,
+            y,
+            color: starColor(s),
+            idx: globalIndex++,
+            timeScale: computedScale,
+            label: bucket.label,
+            scale: combinedScale,
+          });
+        });
+      }
     });
     return placed;
   })();
+  // -----------------------------------------------------------
 
   const activeTask = activeId ? tasks.find((t) => t.id === activeId) : null;
   let activeBucket: TimeBucket | null = null;
@@ -881,13 +918,13 @@ export default function Planner() {
     const newDaysRemaining = daysFromBucket(newBucket);
 
     const today = new Date();
-    const base = new Date(
+    const baseDate = new Date(
       today.getFullYear(),
       today.getMonth(),
       today.getDate()
     );
     const msPerDay = 1000 * 60 * 60 * 24;
-    const deadlineMs = base.getTime() + newDaysRemaining * msPerDay;
+    const deadlineMs = baseDate.getTime() + newDaysRemaining * msPerDay;
     const newDeadlineDate = new Date(deadlineMs);
     const iso = newDeadlineDate.toISOString().slice(0, 10);
 
@@ -925,6 +962,10 @@ export default function Planner() {
   const activeDaysNumberLabel =
     activeDaysNumber != null ? `${activeDaysNumber} days remaining` : "";
 
+  const [shareDialogOpen, setShareDialogOpen] = useState(false); // alias
+
+  const sizeLocal = size; // to avoid confusion
+
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
       <div className="max-w-[1800px] mx-auto px-4 py-6 lg:px-8 lg:py-8">
@@ -943,7 +984,7 @@ export default function Planner() {
           {/* LEFT COLUMN */}
           <div
             className="flex flex-col w-[360px] justify-between"
-            style={{ height: size }}
+            style={{ height: sizeLocal }}
           >
             <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm">
               <CardContent className="p-4 space-y-3">
@@ -1090,7 +1131,7 @@ export default function Planner() {
           {/* CENTER – PLANNER */}
           <div
             className="relative flex-shrink-0"
-            style={{ width: size, height: size }}
+            style={{ width: sizeLocal, height: sizeLocal }}
           >
             {/* Top urgency labels */}
             <div
@@ -1171,7 +1212,7 @@ export default function Planner() {
             >
               <div className="flex flex-col items-center gap-1">
                 <div className="flex flex-col items-center gap-0.5">
-                  {/* Not important label star stays white */}
+                  {/* Not important star stays white */}
                   <StarSVG size={14} color="#ffffff" />
                 </div>
                 <div
@@ -1187,8 +1228,8 @@ export default function Planner() {
 
             <svg
               ref={svgRef}
-              width={size}
-              height={size}
+              width={sizeLocal}
+              height={sizeLocal}
               className="rounded-3xl shadow-xl bg-white"
               style={{ touchAction: "none" }}
               onMouseMove={handleMouseMove}
@@ -1290,7 +1331,7 @@ export default function Planner() {
           {/* RIGHT COLUMN */}
           <div
             className="flex flex-col w-[360px] justify-between"
-            style={{ height: size }}
+            style={{ height: sizeLocal }}
           >
             <Card className="shadow-md border border-slate-200/80 bg-white/95 backdrop-blur-sm">
               <CardContent className="p-3 text-xs text-slate-800 space-y-1">
