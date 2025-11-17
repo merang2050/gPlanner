@@ -66,7 +66,7 @@ const starColor = (s: Stars) => {
     case 2:
       return "#22c55e"; // months
     case 3:
-      return "#eab308"; // dark yellow for weeks
+      return "#eab308"; // weeks (dark yellow)
     case 4:
     default:
       return "#ef4444"; // days
@@ -812,10 +812,9 @@ export default function Planner() {
         const bucket = bucketFromDays(dNum);
         const computedScale = timeScaleFromBucket(bucket);
 
-        // Extra shrink near center to avoid overlap:
-        // radFrac ~ 0 -> inner ring -> minimum ~0.35
-        // radFrac ~ 1 -> outer ring -> ~1.0
-        const ringScale = 0.35 + 0.65 * radFrac;
+        // NEW: inner (more urgent) = slightly bigger, outer = slightly smaller
+        // radFrac ~ 0 -> ~0.9, radFrac ~ 1 -> ~0.65
+        const ringScale = 0.9 - 0.25 * radFrac;
         const combinedScale = globalScale * ringScale;
 
         placed.push({
