@@ -66,7 +66,7 @@ const starColor = (s: Stars) => {
     case 2:
       return "#22c55e"; // months
     case 3:
-      return "#f97316"; // weeks
+      return "#eab308"; // dark yellow for weeks
     case 4:
     default:
       return "#ef4444"; // days
@@ -400,6 +400,9 @@ export default function Planner() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
+  const [csvUrl, setCsvUrl] = useState("");
+  const csvUrlInputRef = useRef<HTMLInputElement | null>(null);
+
   const [maxPerQuad, setMaxPerQuad] = useState<{
     UI: number;
     NUI: number;
@@ -469,6 +472,11 @@ export default function Planner() {
         }));
       }
 
+      const savedUrl = localStorage.getItem("planner_csv_url");
+      if (savedUrl) {
+        setCsvUrl(savedUrl);
+      }
+
       const setupFlag = localStorage.getItem("planner_initial_choice_done");
       if (!setupFlag && loaded.length === 0) {
         setInitialSetupOpen(true);
@@ -493,6 +501,14 @@ export default function Planner() {
       //
     }
   }, [maxPerQuad]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("planner_csv_url", csvUrl);
+    } catch {
+      //
+    }
+  }, [csvUrl]);
 
   const quadCounts: Record<QuadKey, number> = {
     UI: 0,
@@ -713,6 +729,33 @@ export default function Planner() {
     setShareOpen(true);
   };
 
+  const loadFromUrl = async () => {
+    if (!csvUrl.trim()) return;
+
+    try {
+      setWarning(null);
+      const res = await fetch(csvUrl.trim());
+      if (!res.ok) {
+        setWarning(
+          `Failed to fetch CSV (HTTP ${res.status}). Make sure this is a direct-download link and publicly readable.`
+        );
+        return;
+      }
+      const text = await res.text();
+      const imported = parseTasksFromCSV(text);
+      if (!imported.length) {
+        setWarning("Loaded CSV has no tasks or invalid format.");
+        return;
+      }
+      setTasks(imported);
+      setActiveId(imported[0].id);
+    } catch {
+      setWarning(
+        "Error loading CSV from URL. Check the link and that the server allows cross-origin (CORS) access."
+      );
+    }
+  };
+
   const size = 900;
   const r = size * 0.48;
   const cx = size / 2;
@@ -873,13 +916,6 @@ export default function Planner() {
 
   const activeDaysNumberLabel =
     activeDaysNumber != null ? `${activeDaysNumber} days remaining` : "";
-
-  const quadCountsLabelColor = (
-    exceeds: boolean,
-    base: string = "text-slate-700"
-  ) => (exceeds ? "text-red-600" : base);
-
-  const csvFileLabel = `CSV export: ${csvFileName || "planner_tasks"}_YYYY-MM-DD.csv`;
 
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
@@ -1267,7 +1303,7 @@ export default function Planner() {
                 </div>
                 <div className="flex items-center gap-2 whitespace-nowrap">
                   <svg width="18" height="18" viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="7" fill="#f97316" />
+                    <circle cx="12" cy="12" r="7" fill="#eab308" />
                   </svg>
                   <span>Weeks (1w–4w)</span>
                 </div>
@@ -1393,42 +1429,33 @@ export default function Planner() {
                   </div>
                 </div>
 
-                <div className="space-y-1 text-xs text-slate-700 border-t border-slate-100 pt-2">
-                  <div
-                    className={quadCountsLabelColor(
-                      quadCounts.UI > maxPerQuad.UI
-                    )}
-                  >
-                    <span className="text-amber-400">★★★★</span> (1–7 d):{" "}
-                    {quadCounts.UI}/{maxPerQuad.UI}
+                <div className="space-y-1 mt-1">
+                  <label className="text-xs text-slate-500">
+                    Shared CSV URL (optional, read-only)
+                  </label>
+                  <div className="flex gap-2">
+                    <Input
+                      ref={csvUrlInputRef}
+                      value={csvUrl}
+                      onChange={(e) => setCsvUrl(e.target.value)}
+                      placeholder="https://... (direct CSV link)"
+                      className="h-8 text-xs"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 px-3 text-xs"
+                      onClick={loadFromUrl}
+                    >
+                      Load URL
+                    </Button>
                   </div>
-                  <div
-                    className={quadCountsLabelColor(
-                      quadCounts.NUI > maxPerQuad.NUI
-                    )}
-                  >
-                    <span className="text-amber-400">★★★</span> (1–4 w):{" "}
-                    {quadCounts.NUI}/{maxPerQuad.NUI}
-                  </div>
-                  <div
-                    className={quadCountsLabelColor(
-                      quadCounts.UNI > maxPerQuad.UNI
-                    )}
-                  >
-                    <span className="text-amber-400">★★</span> (1–12 m):{" "}
-                    {quadCounts.UNI}/{maxPerQuad.UNI}
-                  </div>
-                  <div
-                    className={quadCountsLabelColor(
-                      quadCounts.NUNI > maxPerQuad.NUNI
-                    )}
-                  >
-                    <span className="text-amber-400">★</span> (1–10 y):{" "}
-                    {quadCounts.NUNI}/{maxPerQuad.NUNI}
-                  </div>
-                  <div className="text-[11px] text-slate-500 mt-1">
-                    {csvFileLabel}
-                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Use a direct-download link from OneDrive/Google Drive or
+                    GitHub that is publicly readable. Changes in gPlanner do not
+                    auto-write back to this file.
+                  </p>
                 </div>
 
                 <div className="space-y-1">
@@ -1571,6 +1598,25 @@ export default function Planner() {
                 Start new schedule
               </Button>
               <Button
+                variant="outline"
+                onClick={() => {
+                  try {
+                    localStorage.setItem(
+                      "planner_initial_choice_done",
+                      "url"
+                    );
+                  } catch {
+                    //
+                  }
+                  setInitialSetupOpen(false);
+                  setTimeout(() => {
+                    csvUrlInputRef.current?.focus();
+                  }, 80);
+                }}
+              >
+                Load from URL
+              </Button>
+              <Button
                 onClick={() => {
                   try {
                     localStorage.setItem(
@@ -1616,7 +1662,7 @@ export default function Planner() {
                 Copy this text and send it via email, chat, or notes.
               </DialogDescription>
             </DialogHeader>
-            <Textarea
+          <Textarea
               className="mt-2 h-64 text-xs"
               value={shareText}
               readOnly

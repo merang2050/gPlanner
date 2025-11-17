@@ -77,7 +77,7 @@ const timeScaleDotRadius = (_ts: TimeScale): number => 24;
 
 function StarSVG({
   size = 14,
-  color = "#fbbf24", // golden by default
+  color = "#fbbf24", // golden
 }: {
   size?: number;
   color?: string;
@@ -208,8 +208,8 @@ function bucketFromDays(days: number | null): TimeBucket {
     const N = 10;
     const dMin = 366;
     const dMax = 3650;
-    const clamped = Math.min(Math.max(d, dMin), dMax);
-    const local = (clamped - dMin) / (dMax - dMin || 1);
+    const clampedDays = Math.min(Math.max(d, dMin), dMax);
+    const local = (clampedDays - dMin) / (dMax - dMin || 1);
     const idxFloat = local * (N - 1);
     const idx = clamp(Math.round(idxFloat) + 1, 1, N);
     return { stars: 1, unitIndex: idx, label: `${idx}y` };
@@ -791,10 +791,13 @@ export default function Planner() {
     (["UI", "NUI", "UNI", "NUNI"] as QuadKey[]).forEach((q) => {
       const list = byQuad[q];
       const n = list.length;
-      let scale = 1;
-      if (n >= 8) scale = 0.55;
-      else if (n >= 5) scale = 0.7;
-      else if (n >= 3) scale = 0.85;
+
+      // Global scaling per quadrant based on count
+      let globalScale = 1;
+      if (n >= 12) globalScale = 0.35;
+      else if (n >= 9) globalScale = 0.45;
+      else if (n >= 6) globalScale = 0.6;
+      else if (n >= 3) globalScale = 0.8;
 
       list.forEach((t, i) => {
         const s = starsFromDeadline(t.deadline);
@@ -809,6 +812,12 @@ export default function Planner() {
         const bucket = bucketFromDays(dNum);
         const computedScale = timeScaleFromBucket(bucket);
 
+        // Extra shrink near center to avoid overlap:
+        // radFrac ~ 0 -> inner ring -> minimum ~0.35
+        // radFrac ~ 1 -> outer ring -> ~1.0
+        const ringScale = 0.35 + 0.65 * radFrac;
+        const combinedScale = globalScale * ringScale;
+
         placed.push({
           id: t.id,
           x,
@@ -817,7 +826,7 @@ export default function Planner() {
           idx: globalIndex++,
           timeScale: computedScale,
           label: bucket.label,
-          scale,
+          scale: combinedScale,
         });
       });
     });
@@ -1263,7 +1272,7 @@ export default function Planner() {
                       x={d.x}
                       y={d.y + 6}
                       textAnchor="middle"
-                      fontSize={18}
+                      fontSize={18 * d.scale + 2}
                       fill="#ffffff"
                       fontWeight="bold"
                       stroke="#111827"
@@ -1662,7 +1671,7 @@ export default function Planner() {
                 Copy this text and send it via email, chat, or notes.
               </DialogDescription>
             </DialogHeader>
-          <Textarea
+            <Textarea
               className="mt-2 h-64 text-xs"
               value={shareText}
               readOnly
