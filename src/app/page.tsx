@@ -45,6 +45,15 @@ const quadLabelByKey: Record<QuadKey, string> = {
   NUNI: "(1–10 years)",
 };
 
+const quadAngleSpan: Record<QuadKey, { start: number; end: number }> = {
+  UI: { start: 95, end: 175 },   // upper-left
+  NUI: { start: 5, end: 85 },    // upper-right
+  UNI: { start: 185, end: 265 }, // lower-left
+  NUNI: { start: 275, end: 355 } // lower-right
+};
+
+const SPOKES_PER_QUAD = 10;
+
 const quadrantForStars = (s: Stars): QuadKey => {
   switch (s) {
     case 1:
@@ -66,18 +75,16 @@ const starColor = (s: Stars) => {
     case 2:
       return "#22c55e"; // months
     case 3:
-      return "#eab308"; // weeks (dark yellow)
+      return "#eab308"; // weeks
     case 4:
     default:
       return "#ef4444"; // days
   }
 };
 
-const timeScaleDotRadius = (_ts: TimeScale): number => 24;
-
 function StarSVG({
   size = 14,
-  color = "#fbbf24", // golden
+  color = "#fbbf24",
 }: {
   size?: number;
   color?: string;
@@ -167,10 +174,24 @@ function unitsPerStars(stars: Stars): number {
   }
 }
 
+function daysRangeForStars(stars: Stars): { N: number; dMin: number; dMax: number } {
+  switch (stars) {
+    case 4:
+      return { N: 7, dMin: 1, dMax: 7 };
+    case 3:
+      return { N: 4, dMin: 8, dMax: 28 };
+    case 2:
+      return { N: 12, dMin: 29, dMax: 365 };
+    case 1:
+    default:
+      return { N: 10, dMin: 366, dMax: 3650 };
+  }
+}
+
 function bucketFromDays(days: number | null): TimeBucket {
   let d = days;
   if (d == null || isNaN(d)) {
-    return { stars: 1, unitIndex: 1, label: "1y" };
+    return { stars: 1 as Stars, unitIndex: 1, label: "1y" };
   }
   if (d <= 0) d = 1;
 
@@ -216,40 +237,26 @@ function bucketFromDays(days: number | null): TimeBucket {
   }
 }
 
+/**
+ * REVERSED radial mapping:
+ *   more time remaining (far future) => near center (small radius)
+ *   less time remaining (urgent)     => near edge (large radius)
+ */
+function daysToRadius(days: number | null): number {
+  const b = bucketFromDays(days);
+  const { N } = daysRangeForStars(b.stars);
+  const idx = clamp(b.unitIndex, 1, N);
+  const baseFrac = (idx - 0.5) / N;   // small idx => near center
+  const radiusFrac = 1 - baseFrac;    // reverse: center = far future
+  return radiusFrac;
+}
+
 function daysFromBucket(b: TimeBucket): number {
-  let N: number;
-  let dMin: number;
-  let dMax: number;
-
-  switch (b.stars) {
-    case 4:
-      N = 7;
-      dMin = 1;
-      dMax = 7;
-      break;
-    case 3:
-      N = 4;
-      dMin = 8;
-      dMax = 28;
-      break;
-    case 2:
-      N = 12;
-      dMin = 29;
-      dMax = 365;
-      break;
-    case 1:
-    default:
-      N = 10;
-      dMin = 366;
-      dMax = 3650;
-      break;
-  }
-
+  const { N, dMin, dMax } = daysRangeForStars(b.stars);
   const idx = clamp(b.unitIndex, 1, N);
   const localCenter = (idx - 0.5) / N;
   const dFloat = dMin + localCenter * (dMax - dMin);
-  const d = Math.round(dFloat);
-  return d;
+  return Math.round(dFloat);
 }
 
 function timeScaleFromBucket(b: TimeBucket): TimeScale {
@@ -282,14 +289,6 @@ function bucketFromStarsAndIndex(stars: Stars, unitIndex: number): TimeBucket {
   }
 }
 
-function daysToRadius(days: number | null): number {
-  const b = bucketFromDays(days);
-  const N = unitsPerStars(b.stars);
-  const idx = clamp(b.unitIndex, 1, N);
-  const radiusFrac = (idx - 0.5) / N;
-  return radiusFrac;
-}
-
 function radiusFromDeadline(deadline: string): number {
   const d = daysRemainingNumber(deadline);
   return daysToRadius(d);
@@ -303,6 +302,17 @@ function starsFromDeadline(deadline: string): Stars {
 function timeScaleFromDeadline(deadline: string): TimeScale {
   const d = daysRemainingNumber(deadline);
   return timeScaleFromBucket(bucketFromDays(d));
+}
+
+function laneAngle(quad: QuadKey, laneIndex: number, laneCount: number): number {
+  const span = quadAngleSpan[quad];
+  if (!span) return angleCenter[quad];
+  const { start, end } = span;
+  if (laneCount <= 1) {
+    return (start + end) / 2;
+  }
+  const step = (end - start) / laneCount;
+  return start + step * (laneIndex + 0.5);
 }
 
 function parseTasksFromCSV(text: string): TaskItem[] {
@@ -373,18 +383,15 @@ function buildShareText(tasks: TaskItem[]): string {
   );
 
   sorted.forEach((t, idx) => {
-    const stars = starsFromDeadline(t.deadline);
-    const quad = quadrantForStars(stars);
-    const dNum = daysRemainingNumber(t.deadline);
-    const bucket = bucketFromDays(dNum);
+    const days = daysRemainingNumber(t.deadline);
+    const b = bucketFromDays(days);
+    const quad = quadrantForStars(b.stars);
     lines.push(
-      `${idx + 1}. [${"★".repeat(stars)} ${quadLabelByKey[quad]}] ${
+      `${idx + 1}. [${"★".repeat(b.stars)} ${quadLabelByKey[quad]}] ${
         t.project || "Untitled"
       } – ${t.text} (Date: ${t.date}, Deadline: ${formatDeadlineMMDDYYYY(
         t.deadline
-      )}, Remaining: ${bucket.label}${
-        dNum != null ? `, ${dNum} days` : ""
-      })`
+      )}, Remaining: ${b.label}${days != null ? `, ${days} days` : ""})`
     );
   });
 
@@ -416,7 +423,12 @@ export default function Planner() {
   });
 
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragInfo, setDragInfo] = useState<{
+    id: string;
+    quad: QuadKey;
+    stars: Stars;
+    laneIndex: number;
+  } | null>(null);
 
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -710,7 +722,7 @@ export default function Planner() {
         });
         return;
       } catch {
-        // fall through
+        //
       }
     }
 
@@ -722,7 +734,7 @@ export default function Planner() {
         );
         return;
       } catch {
-        // fall through
+        //
       }
     }
 
@@ -756,28 +768,23 @@ export default function Planner() {
     }
   };
 
+  const handleCapacityChange = (key: QuadKey, value: string) => {
+    const parsed = parseInt(value, 10);
+    if (Number.isNaN(parsed) || parsed < 1) return;
+    setMaxPerQuad((prev) => ({ ...prev, [key]: parsed }));
+  };
+
+  const activeTask = activeId ? tasks.find((t) => t.id === activeId) : null;
+
   const size = 900;
   const r = size * 0.48;
   const cx = size / 2;
   const cy = size / 2;
   const maxR = r - 16;
 
-  // --------- NEW DOT PLACEMENT WITH PER-BAND SPREAD ----------
+  // DOT LAYOUT
   const dots = (() => {
-    const byQuad: Record<QuadKey, TaskItem[]> = {
-      UI: [],
-      NUI: [],
-      UNI: [],
-      NUNI: [],
-    };
-
-    tasks.forEach((t) => {
-      const s = starsFromDeadline(t.deadline);
-      const q = quadrantForStars(s);
-      byQuad[q].push(t);
-    });
-
-    const placed: {
+    type PlacedDot = {
       id: string;
       x: number;
       y: number;
@@ -786,99 +793,100 @@ export default function Planner() {
       timeScale: TimeScale;
       label: string;
       scale: number;
-    }[] = [];
+      laneIndex: number;
+    };
+
+    const placed: PlacedDot[] = [];
     let globalIndex = 1;
 
-    (["UI", "NUI", "UNI", "NUNI"] as QuadKey[]).forEach((q) => {
-      const list = byQuad[q];
-      const n = list.length;
+    const byQuad: Record<QuadKey, TaskItem[]> = {
+      UI: [],
+      NUI: [],
+      UNI: [],
+      NUNI: [],
+    };
 
-      // Global scaling per quadrant based on count
-      let globalScale = 1;
-      if (n >= 12) globalScale = 0.35;
-      else if (n >= 9) globalScale = 0.45;
-      else if (n >= 6) globalScale = 0.6;
-      else if (n >= 3) globalScale = 0.8;
-
-      if (n === 0) return;
-
-      // Group tasks in this quadrant by discrete time band (unitIndex)
-      interface Entry {
-        t: TaskItem;
-        radFrac: number;
-        bucket: TimeBucket;
-        dNum: number | null;
-      }
-      const byBand = new Map<number, Entry[]>();
-
-      list.forEach((t) => {
-        const dNum = daysRemainingNumber(t.deadline);
-        const bucket = bucketFromDays(dNum);
-        const radFrac = radiusFromDeadline(t.deadline);
-        const key = bucket.unitIndex;
-        const arr = byBand.get(key) ?? [];
-        arr.push({ t, radFrac, bucket, dNum });
-        byBand.set(key, arr);
-      });
-
-      const base = angleCenter[q];
-      const fullRange = 60; // degrees of spread within quadrant for a band
-      const halfRange = fullRange / 2;
-
-      for (const bandEntries of byBand.values()) {
-        const m = bandEntries.length;
-        // stable order for consistency
-        bandEntries.sort((a, b) => a.t.id.localeCompare(b.t.id));
-
-        bandEntries.forEach((entry, j) => {
-          const { t, radFrac, bucket, dNum } = entry;
-          const s = starsFromDeadline(t.deadline);
-
-          let angle: number;
-          if (m === 1) {
-            angle = base;
-          } else {
-            const step = fullRange / (m - 1);
-            angle = base - halfRange + j * step;
-          }
-
-          const rad = radFrac * maxR;
-          const angRad = (angle * Math.PI) / 180;
-          const x = cx + rad * Math.cos(angRad);
-          const y = cy - rad * Math.sin(angRad);
-          const computedScale = timeScaleFromBucket(bucket);
-
-          // Inner (urgent) a bit bigger; outer a bit smaller
-          const ringScale = 0.9 - 0.25 * radFrac;
-          const combinedScale = globalScale * ringScale;
-
-          placed.push({
-            id: t.id,
-            x,
-            y,
-            color: starColor(s),
-            idx: globalIndex++,
-            timeScale: computedScale,
-            label: bucket.label,
-            scale: combinedScale,
-          });
-        });
-      }
+    tasks.forEach((t) => {
+      const days = daysRemainingNumber(t.deadline);
+      const bucket = bucketFromDays(days);
+      const q = quadrantForStars(bucket.stars);
+      byQuad[q].push(t);
     });
+
+    (Object.keys(byQuad) as QuadKey[]).forEach((q) => {
+      const arr = byQuad[q];
+      if (!arr.length) return;
+
+      const laneCount = SPOKES_PER_QUAD;
+      const sorted = [...arr];
+
+      sorted.forEach((t, idxInQuad) => {
+        const laneIndex = idxInQuad;
+        const days = daysRemainingNumber(t.deadline);
+        const bucket = bucketFromDays(days);
+        const radiusFrac = daysToRadius(days);
+        const rad = radiusFrac * maxR;
+
+        const angleDeg = laneAngle(q, laneIndex, laneCount);
+        const angleRad = (angleDeg * Math.PI) / 180;
+
+        const x = cx + rad * Math.cos(angleRad);
+        const y = cy - rad * Math.sin(angleRad);
+
+        const ts = timeScaleFromBucket(bucket);
+
+        const densityScale = clamp(
+          1 - (laneCount - 1) * 0.03,
+          0.5,
+          1
+        );
+        const urgencyScale = 0.7 + 0.3 * radiusFrac; // center ~0.7, edge ~1.0
+        const finalScale = clamp(
+          densityScale * urgencyScale,
+          0.5,
+          1.2
+        );
+
+        placed.push({
+          id: t.id,
+          x,
+          y,
+          color: starColor(bucket.stars),
+          idx: globalIndex++,
+          timeScale: ts,
+          label: bucket.label,
+          scale: finalScale,
+          laneIndex,
+        });
+      });
+    });
+
     return placed;
   })();
-  // -----------------------------------------------------------
 
-  const activeTask = activeId ? tasks.find((t) => t.id === activeId) : null;
-  let activeBucket: TimeBucket | null = null;
-  let activeDaysNumber: number | null = null;
-  if (activeTask) {
-    activeDaysNumber = daysRemainingNumber(activeTask.deadline);
-    activeBucket = bucketFromDays(activeDaysNumber);
-  }
+  const sizeLocal = size;
 
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
-    if (!dragId) return;
+  const [initialSetupOpenState, setInitialSetupOpenState] =
+    useState(initialSetupOpen);
+  useEffect(() => {
+    setInitialSetupOpenState(initialSetupOpen);
+  }, [initialSetupOpen]);
+
+  const [shareOpenState, setShareOpenState] = useState(shareOpen);
+  useEffect(() => {
+    setShareOpenState(shareOpen);
+  }, [shareOpen]);
+
+  const [csvOpenState, setCsvOpenState] = useState(csvOpen);
+  useEffect(() => {
+    setCsvOpenState(csvOpen);
+  }, [csvOpen]);
+
+  // DRAG: move along assigned spoke; continuous mapping center↔far future
+  const handleMouseMove = (
+    e: React.MouseEvent<SVGSVGElement, MouseEvent>
+  ) => {
+    if (!dragInfo) return;
     const svg = svgRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
@@ -887,35 +895,31 @@ export default function Planner() {
     const dx = mx - cx;
     const dy = my - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    const radiusFrac = Math.max(0, Math.min(1, dist / maxR));
 
-    let newQuad: QuadKey;
-    if (mx <= cx && my <= cy) {
-      newQuad = "UI";
-    } else if (mx >= cx && my <= cy) {
-      newQuad = "NUI";
-    } else if (mx <= cx && my >= cy) {
-      newQuad = "UNI";
-    } else {
-      newQuad = "NUNI";
-    }
+    let radiusFracRaw = clamp(dist / maxR, 0, 1);
 
-    const newStars: Stars =
-      newQuad === "UI" ? 4 : newQuad === "NUI" ? 3 : newQuad === "UNI" ? 2 : 1;
+    const { id, quad, stars, laneIndex } = dragInfo;
+    const { N, dMin, dMax } = daysRangeForStars(stars);
 
-    const currentTask = tasks.find((t) => t.id === dragId);
-    if (currentTask) {
-      const currentStars = starsFromDeadline(currentTask.deadline);
-      const currentQuad = quadrantForStars(currentStars);
-      if (newQuad !== currentQuad && quadCounts[newQuad] >= maxPerQuad[newQuad]) {
-        return;
-      }
-    }
+    // 0(center) -> dMax, 1(edge) -> dMin
+    const local = 1 - radiusFracRaw;
+    const dFloat = dMin + local * (dMax - dMin || 1);
+    let dNew = Math.round(dFloat);
+    if (dNew < dMin) dNew = dMin;
+    if (dNew > dMax) dNew = dMax;
 
-    const N = unitsPerStars(newStars);
-    const idx = clamp(Math.floor(radiusFrac * N) + 1, 1, N);
-    const newBucket = bucketFromStarsAndIndex(newStars, idx);
+    // map back to discrete band index
+    const local2 = (dNew - dMin) / (dMax - dMin || 1);
+    const idxFloat = local2 * (N - 1) + 0.5;
+    const idx = clamp(Math.round(idxFloat), 1, N);
+
+    const newBucket = bucketFromStarsAndIndex(stars, idx);
     const newDaysRemaining = daysFromBucket(newBucket);
+    const newTimeScale = timeScaleFromBucket(newBucket);
+
+    // final radius consistent with band index
+    const baseFrac = (idx - 0.5) / N;
+    const radiusFracNew = 1 - baseFrac;
 
     const today = new Date();
     const baseDate = new Date(
@@ -928,43 +932,33 @@ export default function Planner() {
     const newDeadlineDate = new Date(deadlineMs);
     const iso = newDeadlineDate.toISOString().slice(0, 10);
 
-    const dyPolar = cy - my;
-    const angleRaw = (Math.atan2(dyPolar, dx) * 180) / Math.PI;
-    let angle = angleRaw;
-    if (angle < 0) angle += 360;
+    const laneCount = SPOKES_PER_QUAD;
+    const laneAngleDeg = laneAngle(quad, laneIndex, laneCount);
 
     setTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== dragId) return t;
-
-        const derivedStars = starsFromDeadline(iso);
-        const newScale = timeScaleFromDeadline(iso);
-        const newRadiusFromDeadline = radiusFromDeadline(iso);
-
-        return {
-          ...t,
-          posAngle: angle,
-          posRadius: newRadiusFromDeadline,
-          stars: derivedStars,
-          deadline: iso,
-          timeScale: newScale,
-        };
-      })
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              deadline: iso,
+              stars,
+              timeScale: newTimeScale,
+              posAngle: laneAngleDeg,
+              posRadius: radiusFracNew,
+            }
+          : t
+      )
     );
   };
 
-  const handleCapacityChange = (key: QuadKey, value: string) => {
-    const parsed = parseInt(value, 10);
-    if (Number.isNaN(parsed) || parsed < 1) return;
-    setMaxPerQuad((prev) => ({ ...prev, [key]: parsed }));
-  };
+  const [csvOpenLocal, setCsvOpenLocal] = useState(csvOpen);
+  useEffect(() => setCsvOpenLocal(csvOpen), [csvOpen]);
 
-  const activeDaysNumberLabel =
-    activeDaysNumber != null ? `${activeDaysNumber} days remaining` : "";
+  const [shareOpenLocal, setShareOpenLocal] = useState(shareOpen);
+  useEffect(() => setShareOpenLocal(shareOpen), [shareOpen]);
 
-  const [shareDialogOpen, setShareDialogOpen] = useState(false); // alias
-
-  const sizeLocal = size; // to avoid confusion
+  const [initialOpenLocal, setInitialOpenLocal] = useState(initialSetupOpen);
+  useEffect(() => setInitialOpenLocal(initialSetupOpen), [initialSetupOpen]);
 
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
@@ -986,6 +980,7 @@ export default function Planner() {
             className="flex flex-col w-[360px] justify-between"
             style={{ height: sizeLocal }}
           >
+            {/* New task */}
             <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm">
               <CardContent className="p-4 space-y-3">
                 <div className="text-xl font-semibold text-slate-900">
@@ -1064,66 +1059,64 @@ export default function Planner() {
               </CardContent>
             </Card>
 
-            {/* SELECTED TASK */}
+            {/* Selected task */}
             <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm">
               <CardContent className="p-4 space-y-2">
                 <div className="text-lg font-semibold text-slate-900">
                   Selected task
                 </div>
-                {activeTask ? (
-                  <div className="text-sm space-y-1 text-slate-800">
-                    {activeBucket && (
+                {(() => {
+                  const t = activeId
+                    ? tasks.find((tt) => tt.id === activeId)
+                    : null;
+                  if (!t) {
+                    return (
+                      <div className="text-sm text-slate-500">
+                        Click a dot in the planner or a task on the right.
+                      </div>
+                    );
+                  }
+                  const dNum = daysRemainingNumber(t.deadline);
+                  const b = bucketFromDays(dNum);
+                  const daysLabel =
+                    dNum != null ? `${dNum} days remaining` : "";
+                  return (
+                    <div className="text-sm space-y-1 text-slate-800">
                       <div>
                         <span className="font-medium">Remaining Time:</span>{" "}
-                        {activeBucket.label}
-                        {activeDaysNumberLabel
-                          ? ` (${activeDaysNumberLabel})`
-                          : ""}
+                        {b.label}
+                        {daysLabel ? ` (${daysLabel})` : ""}
                       </div>
-                    )}
-                    <div>
-                      <span className="font-medium">Project:</span>{" "}
-                      {activeTask.project || "Untitled"}
-                    </div>
-                    <div>
-                      <span className="font-medium">Task:</span>{" "}
-                      {activeTask.text}
-                    </div>
-                    <div>
-                      <span className="font-medium">Date:</span>{" "}
-                      {activeTask.date}
-                    </div>
-                    <div>
-                      <span className="font-medium">Deadline:</span>{" "}
-                      {formatDeadlineMMDDYYYY(activeTask.deadline)}
-                    </div>
-                    <div>
-                      <span className="font-medium">Region:</span>{" "}
-                      <span className="text-amber-400">
-                        {"★".repeat(
-                          starsFromDeadline(activeTask.deadline) || 1
-                        )}
-                      </span>{" "}
-                      {
-                        quadLabelByKey[
-                          quadrantForStars(
-                            starsFromDeadline(activeTask.deadline)
-                          )
-                        ]
-                      }
-                    </div>
-                    {activeTask.finishDate && (
                       <div>
-                        <span className="font-medium">Finished:</span>{" "}
-                        {activeTask.finishDate}
+                        <span className="font-medium">Project:</span>{" "}
+                        {t.project || "Untitled"}
                       </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-sm text-slate-500">
-                    Click a dot in the planner or a task on the right.
-                  </div>
-                )}
+                      <div>
+                        <span className="font-medium">Task:</span> {t.text}
+                      </div>
+                      <div>
+                        <span className="font-medium">Date:</span> {t.date}
+                      </div>
+                      <div>
+                        <span className="font-medium">Deadline:</span>{" "}
+                        {formatDeadlineMMDDYYYY(t.deadline)}
+                      </div>
+                      <div>
+                        <span className="font-medium">Region:</span>{" "}
+                        <span className="text-amber-400">
+                          {"★".repeat(b.stars)}
+                        </span>{" "}
+                        {quadLabelByKey[quadrantForStars(b.stars)]}
+                      </div>
+                      {t.finishDate && (
+                        <div>
+                          <span className="font-medium">Finished:</span>{" "}
+                          {t.finishDate}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </CardContent>
             </Card>
           </div>
@@ -1133,9 +1126,10 @@ export default function Planner() {
             className="relative flex-shrink-0"
             style={{ width: sizeLocal, height: sizeLocal }}
           >
-            {/* Top urgency labels */}
+            {/* Top labels: Urgent / Not urgent */}
             <div
-              className="absolute bg-slate-900 text-white rounded-md py-1 text-center text-base font-semibold shadow-sm"
+              className="absolute bg-slate-900 text-white rounded-md py-1 text-center
+                         text-base font-semibold shadow-sm"
               style={{ left: cx - r, top: cy - r - 32, width: r }}
             >
               <div className="flex items-center justify-center gap-1">
@@ -1145,7 +1139,8 @@ export default function Planner() {
               </div>
             </div>
             <div
-              className="absolute bg-slate-900 text-white rounded-md py-1 text-center text-base font-semibold shadow-sm"
+              className="absolute bg-slate-900 text-white rounded-md py-1 text-center
+                         text-base font-semibold shadow-sm"
               style={{ left: cx, top: cy - r - 32, width: r }}
             >
               <div className="flex items-center justify-center gap-1">
@@ -1154,39 +1149,7 @@ export default function Planner() {
               </div>
             </div>
 
-            {/* 25/50/75 labels */}
-            {(() => {
-              const specs: { label: string; frac: number }[] = [
-                { label: "75%", frac: 0.25 },
-                { label: "50%", frac: 0.5 },
-                { label: "25%", frac: 0.75 },
-              ];
-              return specs.map(({ label, frac }) => {
-                const rr = maxR * frac;
-                const yRing = cy - rr;
-                const top = yRing - 14;
-                return (
-                  <div
-                    key={label}
-                    className="absolute flex items-center justify-center"
-                    style={{
-                      left: cx - 40,
-                      top,
-                      width: 80,
-                    }}
-                  >
-                    <span
-                      className="px-3 py-0.5 rounded-full text-white font-semibold text-base shadow-sm"
-                      style={{ backgroundColor: "#8b5cf6" }}
-                    >
-                      {label}
-                    </span>
-                  </div>
-                );
-              });
-            })()}
-
-            {/* Importance labels */}
+            {/* Importance labels (vertical, left) */}
             <div
               className="absolute bg-slate-900 text-white rounded-md px-2 py-1 flex items-center justify-center text-base font-semibold shadow-sm"
               style={{ left: cx - r - 52, top: cy - r, height: r }}
@@ -1212,7 +1175,6 @@ export default function Planner() {
             >
               <div className="flex flex-col items-center gap-1">
                 <div className="flex flex-col items-center gap-0.5">
-                  {/* Not important star stays white */}
                   <StarSVG size={14} color="#ffffff" />
                 </div>
                 <div
@@ -1226,6 +1188,31 @@ export default function Planner() {
               </div>
             </div>
 
+            {/* NEW: ring percentage labels aligned with rings */}
+            {(() => {
+              const specs = [
+                { label: "75%", frac: 0.25 }, // inner ring = most time remaining
+                { label: "50%", frac: 0.5 },  // middle
+                { label: "25%", frac: 0.75 }, // outer = nearer deadline
+              ];
+              return specs.map(({ label, frac }) => {
+                const rr = maxR * frac;
+                return (
+                  <div
+                    key={label}
+                    className="absolute px-3 py-0.5 rounded-full text-white font-semibold text-xs shadow-sm"
+                    style={{
+                      left: cx + r + 16,
+                      top: cy - rr - 10,
+                      backgroundColor: "#8b5cf6",
+                    }}
+                  >
+                    {label}
+                  </div>
+                );
+              });
+            })()}
+
             <svg
               ref={svgRef}
               width={sizeLocal}
@@ -1233,9 +1220,10 @@ export default function Planner() {
               className="rounded-3xl shadow-xl bg-white"
               style={{ touchAction: "none" }}
               onMouseMove={handleMouseMove}
-              onMouseUp={() => setDragId(null)}
-              onMouseLeave={() => setDragId(null)}
+              onMouseUp={() => setDragInfo(null)}
+              onMouseLeave={() => setDragInfo(null)}
             >
+              {/* background circle */}
               <circle
                 cx={cx}
                 cy={cy}
@@ -1244,6 +1232,7 @@ export default function Planner() {
                 stroke="#e5e7eb"
                 strokeWidth={2}
               />
+              {/* crosshair */}
               <line
                 x1={cx}
                 y1={cy - r}
@@ -1261,6 +1250,7 @@ export default function Planner() {
                 strokeWidth={2}
               />
 
+              {/* concentric rings */}
               {[0.25, 0.5, 0.75].map((frac, idx) => {
                 const rr = maxR * frac;
                 return (
@@ -1277,14 +1267,50 @@ export default function Planner() {
                 );
               })}
 
+              {/* spokes per quadrant */}
+              {(["UI", "NUI", "UNI", "NUNI"] as QuadKey[]).map((q) => {
+                const lines = [];
+                for (let lane = 0; lane < SPOKES_PER_QUAD; lane++) {
+                  const angleDeg = laneAngle(q, lane, SPOKES_PER_QUAD);
+                  const angleRad = (angleDeg * Math.PI) / 180;
+                  const x2 = cx + maxR * Math.cos(angleRad);
+                  const y2 = cy - maxR * Math.sin(angleRad);
+                  lines.push(
+                    <line
+                      key={`${q}-${lane}`}
+                      x1={cx}
+                      y1={cy}
+                      x2={x2}
+                      y2={y2}
+                      stroke="#e5e7eb"
+                      strokeWidth={1}
+                      strokeDasharray="3 5"
+                      opacity={0.7}
+                    />
+                  );
+                }
+                return lines;
+              })}
+
+              {/* dots */}
               {dots.map((d) => {
-                const dotR = timeScaleDotRadius(d.timeScale) * d.scale;
+                const dotR = 24 * d.scale;
                 return (
                   <g
                     key={d.id}
                     onMouseDown={(e) => {
                       e.preventDefault();
-                      setDragId(d.id);
+                      const t = tasks.find((tt) => tt.id === d.id);
+                      if (!t) return;
+                      const days = daysRemainingNumber(t.deadline);
+                      const bucket = bucketFromDays(days);
+                      const q = quadrantForStars(bucket.stars);
+                      setDragInfo({
+                        id: d.id,
+                        quad: q,
+                        stars: bucket.stars,
+                        laneIndex: d.laneIndex,
+                      });
                       setActiveId(d.id);
                     }}
                     onClick={(e) => {
@@ -1333,6 +1359,7 @@ export default function Planner() {
             className="flex flex-col w-[360px] justify-between"
             style={{ height: sizeLocal }}
           >
+            {/* Geometry Time legend */}
             <Card className="shadow-md border border-slate-200/80 bg-white/95 backdrop-blur-sm">
               <CardContent className="p-3 text-xs text-slate-800 space-y-1">
                 <div className="font-semibold text-[11px] mb-1 tracking-wide text-slate-700">
@@ -1365,6 +1392,7 @@ export default function Planner() {
               </CardContent>
             </Card>
 
+            {/* Tasks */}
             <Card className="shadow-md border border-slate-200/80 bg-white/90 backdrop-blur-sm flex-1">
               <CardContent className="p-4 space-y-3 h-full flex flex-col">
                 <div className="flex items-center justify-between gap-2 mb-1">
@@ -1526,9 +1554,9 @@ export default function Planner() {
                     </div>
                   )}
                   {tasks.map((t, i) => {
-                    const s = starsFromDeadline(t.deadline);
-                    const dNum = daysRemainingNumber(t.deadline);
-                    const b = bucketFromDays(dNum);
+                    const days = daysRemainingNumber(t.deadline);
+                    const b = bucketFromDays(days);
+                    const s = b.stars;
                     return (
                       <div
                         key={t.id}
@@ -1546,7 +1574,7 @@ export default function Planner() {
                         <div className="text-[11px] text-slate-200">
                           <div>
                             rT: {b.label}
-                            {dNum != null && ` (${dNum}d)`}
+                            {days != null && ` (${days}d)`}
                           </div>
                           <div>dL: {formatDeadlineMMDDYYYY(t.deadline)}</div>
                           <div className="flex items-center gap-2 mt-1">
@@ -1564,13 +1592,7 @@ export default function Planner() {
                             <span>Region:</span>
                             <StarRow stars={s} />
                             <span className="truncate">
-                              {
-                                quadLabelByKey[
-                                  quadrantForStars(
-                                    starsFromDeadline(t.deadline)
-                                  )
-                                ]
-                              }
+                              {quadLabelByKey[quadrantForStars(s)]}
                             </span>
                           </div>
                           {t.finishDate && (
@@ -1619,7 +1641,12 @@ export default function Planner() {
         </div>
 
         {/* Initial setup dialog */}
-        <Dialog open={initialSetupOpen} onOpenChange={setInitialSetupOpen}>
+        <Dialog
+          open={initialOpenLocal}
+          onOpenChange={(open) => {
+            setInitialSetupOpen(open);
+          }}
+        >
           <DialogContent className="max-w-md">
             <DialogHeader>
               <DialogTitle>Start your schedule</DialogTitle>
@@ -1686,7 +1713,12 @@ export default function Planner() {
         </Dialog>
 
         {/* CSV Preview dialog */}
-        <Dialog open={csvOpen} onOpenChange={setCsvOpen}>
+        <Dialog
+          open={csvOpenLocal}
+          onOpenChange={(open) => {
+            setCsvOpen(open);
+          }}
+        >
           <DialogContent className="max-w-3xl">
             <DialogHeader>
               <DialogTitle>CSV preview</DialogTitle>
@@ -1703,7 +1735,12 @@ export default function Planner() {
         </Dialog>
 
         {/* Share dialog fallback */}
-        <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+        <Dialog
+          open={shareOpenLocal}
+          onOpenChange={(open) => {
+            setShareOpen(open);
+          }}
+        >
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>Share schedule</DialogTitle>
