@@ -1188,29 +1188,33 @@ export default function Planner() {
               </div>
             </div>
 
-            {/* NEW: ring percentage labels aligned with rings */}
+            {/* NEW: 25/50/75 bar on the right side */}
             {(() => {
               const specs = [
-                { label: "75%", frac: 0.25 }, // inner ring = most time remaining
-                { label: "50%", frac: 0.5 },  // middle
-                { label: "25%", frac: 0.75 }, // outer = nearer deadline
+                { label: "75%", order: 0 },
+                { label: "50%", order: 1 },
+                { label: "25%", order: 2 },
               ];
-              return specs.map(({ label, frac }) => {
-                const rr = maxR * frac;
-                return (
-                  <div
-                    key={label}
-                    className="absolute px-3 py-0.5 rounded-full text-white font-semibold text-xs shadow-sm"
-                    style={{
-                      left: cx + r + 16,
-                      top: cy - rr - 10,
-                      backgroundColor: "#8b5cf6",
-                    }}
-                  >
-                    {label}
-                  </div>
-                );
-              });
+              return (
+                <div
+                  className="absolute flex flex-col items-center justify-between"
+                  style={{
+                    left: cx + r + 16,
+                    top: cy - maxR,
+                    height: maxR * 2,
+                  }}
+                >
+                  {specs.map(({ label }) => (
+                    <div
+                      key={label}
+                      className="px-3 py-0.5 rounded-full text-white font-semibold text-xs shadow-sm"
+                      style={{ backgroundColor: "#8b5cf6" }}
+                    >
+                      {label}
+                    </div>
+                  ))}
+                </div>
+              );
             })()}
 
             <svg

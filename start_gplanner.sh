@@ -16,7 +16,7 @@ if [ -f "$HOME/.zshrc" ]; then
 fi
 
 # === Configuration: project folder ===
-PROJECT_DIR="/Users/mghafari/github/gPlanner"
+PROJECT_DIR="/Users/mghafari/tian_lab/planner"
 
 # =============== Do not edit below this line ===============
 cd "$PROJECT_DIR" || {
