@@ -46,25 +46,25 @@ const quadLabelByKey: Record<QuadKey, string> = {
 };
 
 const quadAngleSpan: Record<QuadKey, { start: number; end: number }> = {
-  UI: { start: 95, end: 175 },   // upper-left
-  NUI: { start: 5, end: 85 },    // upper-right
+  UI: { start: 95, end: 175 }, // upper-left
+  NUI: { start: 5, end: 85 }, // upper-right
   UNI: { start: 185, end: 265 }, // lower-left
-  NUNI: { start: 275, end: 355 } // lower-right
+  NUNI: { start: 275, end: 355 }, // lower-right
 };
 
 const SPOKES_PER_QUAD = 10;
 
 const quadrantForStars = (s: Stars): QuadKey => {
   switch (s) {
-    case 1:
-      return "NUNI";
-    case 2:
-      return "UNI";
+    case 4:
+      return "UI";
     case 3:
       return "NUI";
-    case 4:
+    case 2:
+      return "UNI";
+    case 1:
     default:
-      return "UI";
+      return "NUNI";
   }
 };
 
@@ -75,10 +75,10 @@ const starColor = (s: Stars) => {
     case 2:
       return "#22c55e"; // months
     case 3:
-      return "#eab308"; // weeks
+      return "#eab308"; // weeks (dark yellow)
     case 4:
     default:
-      return "#ef4444"; // days
+      return "#ef4444"; // days (red)
   }
 };
 
@@ -174,7 +174,9 @@ function unitsPerStars(stars: Stars): number {
   }
 }
 
-function daysRangeForStars(stars: Stars): { N: number; dMin: number; dMax: number } {
+function daysRangeForStars(
+  stars: Stars
+): { N: number; dMin: number; dMax: number } {
   switch (stars) {
     case 4:
       return { N: 7, dMin: 1, dMax: 7 };
@@ -195,6 +197,7 @@ function bucketFromDays(days: number | null): TimeBucket {
   }
   if (d <= 0) d = 1;
 
+  // 4★: 1–7 days
   if (d <= 7) {
     const N = 7;
     const dMin = 1;
@@ -205,6 +208,7 @@ function bucketFromDays(days: number | null): TimeBucket {
     return { stars: 4, unitIndex: idx, label: `${idx}d` };
   }
 
+  // 3★: 8–28 days (1–4 weeks)
   if (d <= 28) {
     const N = 4;
     const dMin = 8;
@@ -215,6 +219,7 @@ function bucketFromDays(days: number | null): TimeBucket {
     return { stars: 3, unitIndex: idx, label: `${idx}w` };
   }
 
+  // 2★: 29–365 days (1–12 months)
   if (d <= 365) {
     const N = 12;
     const dMin = 29;
@@ -225,6 +230,7 @@ function bucketFromDays(days: number | null): TimeBucket {
     return { stars: 2, unitIndex: idx, label: `${idx}m` };
   }
 
+  // 1★: 366–3650 days (1–10 years)
   {
     const N = 10;
     const dMin = 366;
@@ -238,16 +244,16 @@ function bucketFromDays(days: number | null): TimeBucket {
 }
 
 /**
- * REVERSED radial mapping:
- *   more time remaining (far future) => near center (small radius)
- *   less time remaining (urgent)     => near edge (large radius)
+ * Reversed radial mapping:
+ *   more time remaining => closer to center
+ *   less time remaining => closer to outer edge
  */
 function daysToRadius(days: number | null): number {
   const b = bucketFromDays(days);
   const { N } = daysRangeForStars(b.stars);
   const idx = clamp(b.unitIndex, 1, N);
-  const baseFrac = (idx - 0.5) / N;   // small idx => near center
-  const radiusFrac = 1 - baseFrac;    // reverse: center = far future
+  const baseFrac = (idx - 0.5) / N;
+  const radiusFrac = 1 - baseFrac;
   return radiusFrac;
 }
 
@@ -255,7 +261,7 @@ function daysFromBucket(b: TimeBucket): number {
   const { N, dMin, dMax } = daysRangeForStars(b.stars);
   const idx = clamp(b.unitIndex, 1, N);
   const localCenter = (idx - 0.5) / N;
-  const dFloat = dMin + localCenter * (dMax - dMin);
+  const dFloat = dMin + localCenter * (dMax - dMin || 1);
   return Math.round(dFloat);
 }
 
@@ -304,7 +310,11 @@ function timeScaleFromDeadline(deadline: string): TimeScale {
   return timeScaleFromBucket(bucketFromDays(d));
 }
 
-function laneAngle(quad: QuadKey, laneIndex: number, laneCount: number): number {
+function laneAngle(
+  quad: QuadKey,
+  laneIndex: number,
+  laneCount: number
+): number {
   const span = quadAngleSpan[quad];
   if (!span) return angleCenter[quad];
   const { start, end } = span;
@@ -387,19 +397,23 @@ function buildShareText(tasks: TaskItem[]): string {
     const b = bucketFromDays(days);
     const quad = quadrantForStars(b.stars);
     lines.push(
-      `${idx + 1}. [${"★".repeat(b.stars)} ${quadLabelByKey[quad]}] ${
-        t.project || "Untitled"
-      } – ${t.text} (Date: ${t.date}, Deadline: ${formatDeadlineMMDDYYYY(
+      `${idx + 1}. [${"★".repeat(b.stars)} ${
+        quadLabelByKey[quad]
+      }] ${t.project || "Untitled"} – ${t.text} (Date: ${
+        t.date
+      }, Deadline: ${formatDeadlineMMDDYYYY(
         t.deadline
-      )}, Remaining: ${b.label}${days != null ? `, ${days} days` : ""})`
+      )}, Remaining: ${b.label}${
+        days != null ? `, ${days} days` : ""
+      })`
     );
   });
 
   return lines.join("\n");
 }
 
-export default function Planner() {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+export default function PlannerClient() {
+  const [date, setDate] = useState("");
   const [deadline, setDeadline] = useState("");
   const [project, setProject] = useState("");
   const [text, setText] = useState("");
@@ -450,7 +464,11 @@ export default function Planner() {
 
   const [initialSetupOpen, setInitialSetupOpen] = useState(false);
 
+  // Initialise from localStorage
   useEffect(() => {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    setDate(todayIso);
+
     try {
       const savedTasks = localStorage.getItem("planner_simple_v3");
       let loaded: TaskItem[] = [];
@@ -498,6 +516,7 @@ export default function Planner() {
     }
   }, []);
 
+  // Persist tasks + maxPerQuad + csvUrl
   useEffect(() => {
     try {
       localStorage.setItem("planner_simple_v3", JSON.stringify(tasks));
@@ -522,6 +541,7 @@ export default function Planner() {
     }
   }, [csvUrl]);
 
+  // quadrant capacities
   const quadCounts: Record<QuadKey, number> = {
     UI: 0,
     NUI: 0,
@@ -542,7 +562,7 @@ export default function Planner() {
 
     if (quadCounts[quad] >= maxPerQuad[quad]) {
       setWarning(
-        `${quadLabelByKey[quad]} is full (${quadCounts[quad]}/${maxPerQuad[quad]}). Consider finishing or moving a task before adding more.`
+        `${quadLabelByKey[quad]} is full (${quadCounts[quad]}/${maxPerQuad[quad]}).`
       );
       return;
     }
@@ -634,6 +654,7 @@ export default function Planner() {
     setWarning(null);
   };
 
+  // Build CSV snapshot
   const csvText = (() => {
     const header = [
       "index",
@@ -776,26 +797,28 @@ export default function Planner() {
 
   const activeTask = activeId ? tasks.find((t) => t.id === activeId) : null;
 
+  // Geometry constants
   const size = 900;
+  const sizeLocal = size;
   const r = size * 0.48;
   const cx = size / 2;
   const cy = size / 2;
   const maxR = r - 16;
 
-  // DOT LAYOUT
-  const dots = (() => {
-    type PlacedDot = {
-      id: string;
-      x: number;
-      y: number;
-      color: string;
-      idx: number;
-      timeScale: TimeScale;
-      label: string;
-      scale: number;
-      laneIndex: number;
-    };
+  type PlacedDot = {
+    id: string;
+    x: number;
+    y: number;
+    color: string;
+    idx: number;
+    timeScale: TimeScale;
+    label: string;
+    scale: number;
+    laneIndex: number;
+  };
 
+  // Compute dot positions
+  const dots: PlacedDot[] = (() => {
     const placed: PlacedDot[] = [];
     let globalIndex = 1;
 
@@ -840,7 +863,7 @@ export default function Planner() {
           0.5,
           1
         );
-        const urgencyScale = 0.7 + 0.3 * radiusFrac; // center ~0.7, edge ~1.0
+        const urgencyScale = 0.7 + 0.3 * radiusFrac;
         const finalScale = clamp(
           densityScale * urgencyScale,
           0.5,
@@ -864,25 +887,6 @@ export default function Planner() {
     return placed;
   })();
 
-  const sizeLocal = size;
-
-  const [initialSetupOpenState, setInitialSetupOpenState] =
-    useState(initialSetupOpen);
-  useEffect(() => {
-    setInitialSetupOpenState(initialSetupOpen);
-  }, [initialSetupOpen]);
-
-  const [shareOpenState, setShareOpenState] = useState(shareOpen);
-  useEffect(() => {
-    setShareOpenState(shareOpen);
-  }, [shareOpen]);
-
-  const [csvOpenState, setCsvOpenState] = useState(csvOpen);
-  useEffect(() => {
-    setCsvOpenState(csvOpen);
-  }, [csvOpen]);
-
-  // DRAG: move along assigned spoke; continuous mapping center↔far future
   const handleMouseMove = (
     e: React.MouseEvent<SVGSVGElement, MouseEvent>
   ) => {
@@ -901,14 +905,13 @@ export default function Planner() {
     const { id, quad, stars, laneIndex } = dragInfo;
     const { N, dMin, dMax } = daysRangeForStars(stars);
 
-    // 0(center) -> dMax, 1(edge) -> dMin
+    // map radius -> days (more urgent -> outer)
     const local = 1 - radiusFracRaw;
     const dFloat = dMin + local * (dMax - dMin || 1);
     let dNew = Math.round(dFloat);
     if (dNew < dMin) dNew = dMin;
     if (dNew > dMax) dNew = dMax;
 
-    // map back to discrete band index
     const local2 = (dNew - dMin) / (dMax - dMin || 1);
     const idxFloat = local2 * (N - 1) + 0.5;
     const idx = clamp(Math.round(idxFloat), 1, N);
@@ -917,7 +920,6 @@ export default function Planner() {
     const newDaysRemaining = daysFromBucket(newBucket);
     const newTimeScale = timeScaleFromBucket(newBucket);
 
-    // final radius consistent with band index
     const baseFrac = (idx - 0.5) / N;
     const radiusFracNew = 1 - baseFrac;
 
@@ -951,14 +953,8 @@ export default function Planner() {
     );
   };
 
-  const [csvOpenLocal, setCsvOpenLocal] = useState(csvOpen);
-  useEffect(() => setCsvOpenLocal(csvOpen), [csvOpen]);
-
-  const [shareOpenLocal, setShareOpenLocal] = useState(shareOpen);
-  useEffect(() => setShareOpenLocal(shareOpen), [shareOpen]);
-
-  const [initialOpenLocal, setInitialOpenLocal] = useState(initialSetupOpen);
-  useEffect(() => setInitialOpenLocal(initialSetupOpen), [initialSetupOpen]);
+  const fileInput = fileInputRef;
+  const csvUrlInput = csvUrlInputRef;
 
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
@@ -1066,9 +1062,7 @@ export default function Planner() {
                   Selected task
                 </div>
                 {(() => {
-                  const t = activeId
-                    ? tasks.find((tt) => tt.id === activeId)
-                    : null;
+                  const t = activeTask;
                   if (!t) {
                     return (
                       <div className="text-sm text-slate-500">
@@ -1128,8 +1122,7 @@ export default function Planner() {
           >
             {/* Top labels: Urgent / Not urgent */}
             <div
-              className="absolute bg-slate-900 text-white rounded-md py-1 text-center
-                         text-base font-semibold shadow-sm"
+              className="absolute bg-slate-900 text-white rounded-md py-1 text-center text-base font-semibold shadow-sm"
               style={{ left: cx - r, top: cy - r - 32, width: r }}
             >
               <div className="flex items-center justify-center gap-1">
@@ -1139,8 +1132,7 @@ export default function Planner() {
               </div>
             </div>
             <div
-              className="absolute bg-slate-900 text-white rounded-md py-1 text-center
-                         text-base font-semibold shadow-sm"
+              className="absolute bg-slate-900 text-white rounded-md py-1 text-center text-base font-semibold shadow-sm"
               style={{ left: cx, top: cy - r - 32, width: r }}
             >
               <div className="flex items-center justify-center gap-1">
@@ -1188,12 +1180,12 @@ export default function Planner() {
               </div>
             </div>
 
-            {/* NEW: ring percentage labels aligned with rings */}
+            {/* Ring percentage labels */}
             {(() => {
               const specs = [
-                { label: "75%", frac: 0.25 }, // inner ring = most time remaining
-                { label: "50%", frac: 0.5 },  // middle
-                { label: "25%", frac: 0.75 }, // outer = nearer deadline
+                { label: "75%", frac: 0.25 },
+                { label: "50%", frac: 0.5 },
+                { label: "25%", frac: 0.75 },
               ];
               return specs.map(({ label, frac }) => {
                 const rr = maxR * frac;
@@ -1202,7 +1194,8 @@ export default function Planner() {
                     key={label}
                     className="absolute px-3 py-0.5 rounded-full text-white font-semibold text-xs shadow-sm"
                     style={{
-                      left: cx + r + 16,
+                      left: cx + r + 8,
+                      transform: "translateX(-50%)",
                       top: cy - rr - 10,
                       backgroundColor: "#8b5cf6",
                     }}
@@ -1267,7 +1260,7 @@ export default function Planner() {
                 );
               })}
 
-              {/* spokes per quadrant */}
+              {/* SPOKES */}
               {(["UI", "NUI", "UNI", "NUNI"] as QuadKey[]).map((q) => {
                 const lines = [];
                 for (let lane = 0; lane < SPOKES_PER_QUAD; lane++) {
@@ -1404,7 +1397,7 @@ export default function Planner() {
                       variant="outline"
                       size="icon"
                       title="Load CSV"
-                      onClick={() => fileInputRef.current?.click()}
+                      onClick={() => fileInput.current?.click()}
                       className="h-7 w-10 border-slate-300"
                     >
                       <span className="text-[10px] font-bold">LOAD</span>
@@ -1439,7 +1432,7 @@ export default function Planner() {
                     <input
                       type="file"
                       accept=".csv,text/csv"
-                      ref={fileInputRef}
+                      ref={fileInput}
                       className="hidden"
                       onChange={handleImportCSV}
                     />
@@ -1512,7 +1505,7 @@ export default function Planner() {
                   </label>
                   <div className="flex gap-2">
                     <Input
-                      ref={csvUrlInputRef}
+                      ref={csvUrlInput}
                       value={csvUrl}
                       onChange={(e) => setCsvUrl(e.target.value)}
                       placeholder="https://... (direct CSV link)"
@@ -1537,7 +1530,7 @@ export default function Planner() {
 
                 <div className="space-y-1">
                   <label className="text-xs text-slate-500">
-                    CSV file name (folder is chosen by your browser / system)
+                    CSV file name (browser decides the folder)
                   </label>
                   <Input
                     value={csvFileName}
@@ -1547,6 +1540,7 @@ export default function Planner() {
                   />
                 </div>
 
+                {/* TASK LIST WITH STRONG ACTIVE HIGHLIGHT */}
                 <div className="space-y-2 max-h-[260px] overflow-auto flex-1">
                   {tasks.length === 0 && (
                     <div className="text-sm text-slate-500">
@@ -1557,6 +1551,14 @@ export default function Planner() {
                     const days = daysRemainingNumber(t.deadline);
                     const b = bucketFromDays(days);
                     const s = b.stars;
+                    const isActive = activeId === t.id;
+
+                    const cardClasses =
+                      "rounded-xl p-2 text-sm flex items-start justify-between gap-2 cursor-pointer transition-colors " +
+                      (isActive
+                        ? "border-2 border-amber-500 bg-amber-200 text-slate-900 shadow-lg"
+                        : "border border-slate-700 bg-slate-900/80 text-slate-100 hover:bg-slate-800");
+
                     return (
                       <div
                         key={t.id}
@@ -1564,43 +1566,52 @@ export default function Planner() {
                           itemRefs.current[t.id] = el;
                         }}
                         onClick={() => setActiveId(t.id)}
-                        className={
-                          "rounded-xl border p-2 text-sm flex items-start justify-between gap-2 cursor-pointer transition-colors " +
-                          (activeId === t.id
-                            ? "border-amber-400 bg-amber-50/10"
-                            : "border-slate-700 bg-slate-900/60 hover:bg-slate-800/80")
-                        }
+                        className={cardClasses}
                       >
-                        <div className="text-[11px] text-slate-200">
+                        <div className="text-[11px]">
                           <div>
                             rT: {b.label}
                             {days != null && ` (${days}d)`}
                           </div>
-                          <div>dL: {formatDeadlineMMDDYYYY(t.deadline)}</div>
+                          <div>
+                            dL: {formatDeadlineMMDDYYYY(t.deadline)}
+                          </div>
+
                           <div className="flex items-center gap-2 mt-1">
-                            <span className="inline-flex items-center justify-center w-5 h-5 text-[11px] font-bold rounded-full bg-slate-900 text-white border border-slate-600">
+                            <span
+                              className={
+                                "inline-flex items-center justify-center w-5 h-5 text-[11px] font-bold rounded-full border " +
+                                (isActive
+                                  ? "bg-amber-400 text-slate-900 border-amber-600"
+                                  : "bg-slate-900 text-white border-slate-600")
+                              }
+                            >
                               {i + 1}
                             </span>
-                            <div className="font-medium truncate text-slate-50">
+                            <div className="font-medium truncate">
                               {t.text}
                             </div>
                           </div>
-                          <div className="text-xs text-slate-300 truncate">
+
+                          <div className="text-xs truncate">
                             {t.project || "Untitled"} · {t.date}
                           </div>
-                          <div className="text-xs text-slate-300 flex items-center gap-2">
+
+                          <div className="text-xs flex items-center gap-2">
                             <span>Region:</span>
                             <StarRow stars={s} />
                             <span className="truncate">
                               {quadLabelByKey[quadrantForStars(s)]}
                             </span>
                           </div>
+
                           {t.finishDate && (
-                            <div className="text-[11px] text-slate-300 truncate">
+                            <div className="text-[11px] truncate">
                               Done: {t.finishDate}
                             </div>
                           )}
                         </div>
+
                         <div className="flex flex-col gap-1 items-end">
                           <button
                             className="px-2 py-0.5 text-[11px] border border-slate-300 rounded bg-slate-50 text-slate-800 hover:bg-slate-100"
@@ -1642,7 +1653,7 @@ export default function Planner() {
 
         {/* Initial setup dialog */}
         <Dialog
-          open={initialOpenLocal}
+          open={initialSetupOpen}
           onOpenChange={(open) => {
             setInitialSetupOpen(open);
           }}
@@ -1686,7 +1697,7 @@ export default function Planner() {
                   }
                   setInitialSetupOpen(false);
                   setTimeout(() => {
-                    csvUrlInputRef.current?.focus();
+                    csvUrlInput.current?.focus();
                   }, 80);
                 }}
               >
@@ -1703,7 +1714,7 @@ export default function Planner() {
                     //
                   }
                   setInitialSetupOpen(false);
-                  fileInputRef.current?.click();
+                  fileInput.current?.click();
                 }}
               >
                 Load from CSV
@@ -1713,12 +1724,7 @@ export default function Planner() {
         </Dialog>
 
         {/* CSV Preview dialog */}
-        <Dialog
-          open={csvOpenLocal}
-          onOpenChange={(open) => {
-            setCsvOpen(open);
-          }}
-        >
+        <Dialog open={csvOpen} onOpenChange={setCsvOpen}>
           <DialogContent className="max-w-3xl">
             <DialogHeader>
               <DialogTitle>CSV preview</DialogTitle>
@@ -1735,12 +1741,7 @@ export default function Planner() {
         </Dialog>
 
         {/* Share dialog fallback */}
-        <Dialog
-          open={shareOpenLocal}
-          onOpenChange={(open) => {
-            setShareOpen(open);
-          }}
-        >
+        <Dialog open={shareOpen} onOpenChange={setShareOpen}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>Share schedule</DialogTitle>
