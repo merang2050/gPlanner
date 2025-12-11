@@ -31,6 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 type StarRegion = 1 | 2 | 3 | 4;
 type TimeBucket = "days" | "weeks" | "months" | "years";
+type TaskFilter = "all" | "active" | "completed";
 
 interface Task {
   id: string;
@@ -388,6 +389,7 @@ const Planner: React.FC = () => {
   const [editOpen, setEditOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
   const [focusedColor, setFocusedColor] = useState<string>("");
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
 
   const [initialSetupOpen, setInitialSetupOpen] = useState(false);
   const [hasShownInitial, setHasShownInitial] = useState(false);
@@ -404,6 +406,7 @@ const Planner: React.FC = () => {
   const [csvFileName, setCsvFileName] = useState<string>("planner_tasks");
 
   const [mounted, setMounted] = useState(false);
+  const [plannerSize, setPlannerSize] = useState(900);
 
   // ---- Load from storage on mount ----
   useEffect(() => {
@@ -430,6 +433,21 @@ const Planner: React.FC = () => {
       const rawName = window.localStorage.getItem(STORAGE_LAST_CSV_NAME);
       if (rawName) setCsvFileName(rawName);
     } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateSize = () => {
+      const width = window.innerWidth || 0;
+      let reserved = 820;
+      if (width < 1280) reserved = 520;
+      if (width < 768) reserved = 48;
+      const available = Math.max(width - reserved, 320);
+      setPlannerSize(Math.min(available, 1080));
+    };
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
   }, []);
 
   // Show initial dialog once when empty
@@ -610,11 +628,93 @@ const Planner: React.FC = () => {
   };
 
   const displayedTasks = useMemo(() => {
-    if (!focusedColor) return tasks;
-    return tasks.filter(
+    const filtered = tasks.filter((t) => {
+      if (taskFilter === "active") return !t.finishedAt;
+      if (taskFilter === "completed") return !!t.finishedAt;
+      return true;
+    });
+    if (!focusedColor) return filtered;
+    return filtered.filter(
       (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
     );
-  }, [tasks, focusedColor]);
+  }, [tasks, focusedColor, taskFilter]);
+
+  const projectSummaries = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        total: number;
+        active: number;
+        color: string;
+      }
+    >();
+
+    for (const task of tasks) {
+      const trimmed = task.project.trim();
+      const key = trimmed.toLowerCase() || "__no_project";
+      const color = resolveProjectColor(task.project, task.projectColor);
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: trimmed || "No project name",
+          total: 0,
+          active: 0,
+          color,
+        });
+      }
+      const entry = map.get(key)!;
+      entry.total += 1;
+      if (!task.finishedAt) entry.active += 1;
+      // refresh color to latest non-empty assignment
+      entry.color = color;
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.total - a.total);
+  }, [tasks]);
+
+  const { activeCount, completedCount } = useMemo(() => {
+    let active = 0;
+    let done = 0;
+    for (const t of tasks) {
+      if (t.finishedAt) done++;
+      else active++;
+    }
+    return { activeCount: active, completedCount: done };
+  }, [tasks]);
+  const totalTasks = tasks.length;
+  const completionRate =
+    totalTasks === 0 ? 0 : Math.round((completedCount / totalTasks) * 100);
+
+  const projectCount = useMemo(() => {
+    const projects = new Set<string>();
+    for (const t of tasks) {
+      const name = t.project.trim().toLowerCase();
+      if (name) projects.add(name);
+    }
+    return projects.size;
+  }, [tasks]);
+
+  const activeRegionCounts = useMemo(() => {
+    const totals: Record<StarRegion, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    for (const t of tasks) {
+      if (!t.finishedAt) {
+        totals[t.region] = (totals[t.region] ?? 0) + 1;
+      }
+    }
+    return totals;
+  }, [tasks]);
+
+  const dueSoonTasks = useMemo(
+    () =>
+      tasks
+        .filter((t) => !t.finishedAt)
+        .slice()
+        .sort((a, b) => a.deadline.localeCompare(b.deadline))
+        .slice(0, 3),
+    [tasks]
+  );
 
   useEffect(() => {
     if (!activeId && tasks.length > 0) {
@@ -886,14 +986,14 @@ const Planner: React.FC = () => {
   }
 
   const geometry = useMemo(() => {
-    const size = 900;
+    const size = plannerSize;
     const cx = size / 2;
     const cy = size / 2;
     const padding = 60;
     const maxR = size / 2 - padding;
     const ringRadii = [0.25, 0.5, 0.75].map((p) => p * maxR);
     return { size, cx, cy, maxR, ringRadii };
-  }, []);
+  }, [plannerSize]);
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
@@ -904,10 +1004,10 @@ const Planner: React.FC = () => {
     1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
   };
   const regionBackgroundFills: Record<StarRegion, string> = {
-    4: "#fee2e2",
-    3: "#fef3c7",
-    2: "#dcfce7",
-    1: "#e0f2fe",
+    4: "#f5f5f5",
+    3: "#ededed",
+    2: "#e6e6e6",
+    1: "#dedede",
   };
 
   const stepsForBucket: Record<TimeBucket, number> = {
@@ -1120,8 +1220,8 @@ const Planner: React.FC = () => {
 
   const dotRadius = (t: Task): number => {
     const progress = urgencyProgress(t);
-    const base = 7;
-    const maxExtra = 7;
+    const base = 9;
+    const maxExtra = 9;
     return base + maxExtra * progress;
   };
 
@@ -1151,10 +1251,10 @@ const Planner: React.FC = () => {
               y1={cy}
               x2={x2r}
               y2={y2r}
-              stroke="#e5e7eb"
-              strokeWidth={1}
-              strokeDasharray="3 5"
-              opacity={0.7}
+              stroke="#cbd5f5"
+              strokeWidth={1.4}
+              strokeDasharray="3 4"
+              opacity={0.9}
             />
           );
         }
@@ -1283,11 +1383,12 @@ const Planner: React.FC = () => {
   };
 
   // ---- Render ----
+  const sidebarMinHeight = Math.min(plannerSize, 760);
 
   return (
     <div className="w-full min-h-screen bg-slate-50 text-slate-900 flex justify-center">
       <div className="max-w-[1800px] w-full px-6 py-6">
-        <div className="flex items-baseline justify-between mb-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-3 mb-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">
               gPlanner
@@ -1308,13 +1409,54 @@ const Planner: React.FC = () => {
             </Button>
           </div>
         </div>
+        <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 mb-6 text-center">
+        {[
+          {
+            label: "Urgent / Important",
+            value: tasks.filter(
+              (task) => task.region === 4 && !task.finishedAt
+            ).length,
+            highlight: true,
+          },
+          { label: "Active", value: activeCount },
+          { label: "Completed", value: completedCount },
+          {
+            label: "Completion",
+            value: `${completionRate}%`,
+          },
+          { label: "Projects", value: projectCount },
+          { label: "Total tasks", value: totalTasks },
+        ].map((stat) => (
+            <div
+              key={stat.label}
+              className={`rounded-2xl border px-3 py-2.5 shadow-sm ${
+                stat.highlight
+                  ? "border-red-200 bg-red-50"
+                  : "border-slate-200 bg-white"
+              }`}
+            >
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">
+                {stat.label}
+              </p>
+              <p className="text-xl font-bold text-slate-900 mt-1">
+                {stat.value}
+              </p>
+            </div>
+          ))}
+        </div>
 
-        <div className="flex gap-4 items-start">
-          {/* Left: New + Selected */}
-          <div className="w-[340px] flex flex-col gap-3">
-            <Card>
+        <div className="flex flex-col xl:flex-row gap-4 items-stretch">
+          {/* Left: New */}
+          <div
+            className="w-full xl:w-[320px] flex flex-col gap-3"
+            style={{ minHeight: sidebarMinHeight }}
+          >
+            <Card className="flex-1 flex flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">New task</CardTitle>
+                <CardDescription className="text-xs">
+                  Capture the essentials and we will place it on the map.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
                 <div className="grid grid-cols-[auto,1fr] gap-x-2 gap-y-2 items-center">
@@ -1476,176 +1618,16 @@ const Planner: React.FC = () => {
               </CardContent>
             </Card>
 
-            <Card className="flex-1">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Selected task</CardTitle>
-                <CardDescription className="text-xs">
-                  Details for the currently selected dot.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="pt-1 text-xs space-y-1">
-                {selectedTask ? (
-                  <>
-                    <p className="font-semibold">
-                      Remaining Time:{" "}
-                      <span className="font-bold">
-                        {compactLabel(selectedTask)} (
-                        {selectedTask.remainingDays} days remaining)
-                      </span>
-                    </p>
-                    {selectedTask.project && (
-                      <p>
-                        <span className="font-semibold">Project:</span>{" "}
-                        {selectedTask.project}
-                      </p>
-                    )}
-                    {selectedTask.projectTag && (
-                      <p>
-                        <span className="font-semibold">Project tag:</span>{" "}
-                        {selectedTask.projectTag}
-                      </p>
-                    )}
-                    <p className="flex items-center gap-2">
-                      <span className="font-semibold">Project color:</span>
-                      <span
-                        className="inline-flex h-3 w-6 rounded border border-slate-400"
-                        style={{
-                          backgroundColor: resolveProjectColor(
-                            selectedTask.project,
-                            selectedTask.projectColor
-                          ),
-                        }}
-                      />
-                      <span>
-                        {resolveProjectColor(
-                          selectedTask.project,
-                          selectedTask.projectColor
-                        )}
-                      </span>
-                    </p>
-                    <p>
-                      <span className="font-semibold">Task:</span>{" "}
-                      {selectedTask.task}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Date:</span>{" "}
-                      {selectedTask.date}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Deadline:</span>{" "}
-                      {formatDateMMDDYYYYFromISODate(
-                        selectedTask.deadline
-                      )}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Region:</span>{" "}
-                      <span className="text-amber-400 font-semibold">
-                        {stars(selectedTask.region)}
-                      </span>{" "}
-                      {regionRange(selectedTask.region)}{" "}
-                      <span className="text-slate-500">
-                        ({regionLabel(selectedTask.region)})
-                      </span>
-                    </p>
-                    {selectedTask.finishedAt && (
-                      <p>
-                        <span className="font-semibold">Finished:</span>{" "}
-                        {formatDateMMDDYYYYFromISODateTime(
-                          selectedTask.finishedAt
-                        )}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-slate-400 italic text-xs">
-                    No task selected. Click a dot or a task card.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Color focus</CardTitle>
-                <CardDescription className="text-xs">
-                  Click a color to isolate its tasks; dots sharing that color
-                  stay on the same lane.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs space-y-2">
-                {colorOptions.length === 0 ? (
-                  <p className="text-slate-500 text-[11px]">
-                    Assign a color to your projects to enable focused viewing.
-                  </p>
-                ) : (
-                  <>
-                    <div className="flex flex-wrap gap-2">
-                      {colorOptions.map((option) => {
-                        const isActive = option.color === focusedColor;
-                        return (
-                          <button
-                            key={option.color}
-                            type="button"
-                            onClick={() =>
-                              setFocusedColor(isActive ? "" : option.color)
-                            }
-                            className={`flex items-center gap-2 rounded-lg border px-2 py-1 transition ${
-                              isActive
-                                ? "border-slate-900 bg-white shadow-sm"
-                                : "border-slate-200 bg-white hover:border-slate-400"
-                            }`}
-                          >
-                            <span
-                              className="inline-flex h-4 w-4 rounded-full border border-slate-900"
-                              style={{ backgroundColor: option.color }}
-                            />
-                            <span className="text-[11px] font-semibold text-slate-800">
-                              {option.label}
-                            </span>
-                            <span className="text-[10px] text-slate-500">
-                              {option.count}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="text-[11px] text-slate-500">
-                      Each color represents a project (or group of projects) you
-                      assigned. Selecting one dims every other color so you can
-                      stay focused.
-                    </p>
-                    {focusedColor && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-slate-600">
-                          Viewing color{" "}
-                          <span className="font-semibold">
-                            {focusColorInfo?.label ?? focusedColor}
-                          </span>
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-[11px]"
-                          onClick={() => setFocusedColor("")}
-                        >
-                          Clear
-                        </Button>
-                      </div>
-                    )}
-                  </>
-                )}
-              </CardContent>
-            </Card>
           </div>
 
           {/* Center: geometry planner */}
-          <div className="flex-1 flex flex-col items-center">
-            <div className="relative flex justify-center items-center">
+          <div className="flex-1 flex flex-col items-center w-full px-0 xl:px-2">
+            <div className="relative flex justify-center items-center w-full">
               <svg
                 ref={svgRef}
                 width={size}
                 height={size}
-                className="rounded-3xl bg-slate-100 shadow-inner border border-slate-200"
+                className="rounded-3xl bg-slate-100 shadow-inner border border-slate-200 max-w-full"
                 onPointerMove={handleDotPointerMove}
                 onPointerUp={handleDotPointerUp}
                 onPointerLeave={handleDotPointerUp}
@@ -1656,8 +1638,9 @@ const Planner: React.FC = () => {
                   cy={cy}
                   r={maxR}
                   fill="#f9fafb"
-                  stroke="#e5e7eb"
-                  strokeWidth={2}
+                  stroke="#94a3b8"
+                  strokeWidth={3}
+                  strokeDasharray="8 6"
                 />
 
                 {/* region backgrounds */}
@@ -1669,16 +1652,16 @@ const Planner: React.FC = () => {
                   y1={cy}
                   x2={cx + maxR}
                   y2={cy}
-                  stroke="#d1d5db"
-                  strokeWidth={1.5}
+                  stroke="#94a3b8"
+                  strokeWidth={2}
                 />
                 <line
                   x1={cx}
                   y1={cy - maxR}
                   x2={cx}
                   y2={cy + maxR}
-                  stroke="#d1d5db"
-                  strokeWidth={1.5}
+                  stroke="#94a3b8"
+                  strokeWidth={2}
                 />
 
                 {/* rings */}
@@ -1689,9 +1672,9 @@ const Planner: React.FC = () => {
                     cy={cy}
                     r={r}
                     fill="none"
-                    stroke="#e5e7eb"
-                    strokeWidth={1}
-                    strokeDasharray="4 4"
+                    stroke="#cbd5f5"
+                    strokeWidth={1.6}
+                    strokeDasharray="3 6"
                   />
                 ))}
 
@@ -1785,107 +1768,174 @@ const Planner: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Geometry legend + tasks */}
-          <div className="w-[360px] flex flex-col gap-3">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Geometry Time</CardTitle>
-                <CardDescription className="text-xs">
-                  Regions are tinted; dot colors come from your projects.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs space-y-2">
-                <div className="space-y-2">
-                  {[
-                    {
-                      color: "#fee2e2",
-                      stars: "★★★★",
-                      title: "Important · Urgent",
-                      window: "Days · 1–7",
-                    },
-                    {
-                      color: "#fef3c7",
-                      stars: "★★★",
-                      title: "Important · Not urgent",
-                      window: "Weeks · 1–4",
-                    },
-                    {
-                      color: "#dcfce7",
-                      stars: "★★",
-                      title: "Not important · Urgent",
-                      window: "Months · 1–12",
-                    },
-                    {
-                      color: "#e0f2fe",
-                      stars: "★",
-                      title: "Not important · Not urgent",
-                      window: "Years · 1–10",
-                    },
-                  ].map((info) => (
-                    <div
-                      key={info.title}
-                      className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white/70 px-3 py-2 shadow-sm"
-                    >
-                      <div
-                        className="h-3.5 w-3.5 rounded border border-slate-300"
-                        style={{ backgroundColor: info.color }}
-                      />
-                      <div className="flex flex-col leading-tight">
-                        <span className="text-[11px] font-semibold text-[#d4af37]">
-                          {info.stars}
-                        </span>
-                        <span className="text-[11px] font-semibold text-slate-900">
-                          {info.title}
-                        </span>
-                        <span className="text-[10px] text-slate-500">
-                          {info.window}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="pt-2 border-t border-slate-200 mt-2">
-                  <p className="text-[11px] text-slate-700">
-                    Each dot inherits your project color, so related initiatives
-                    are instantly recognizable across the board.
-                  </p>
-                  <p className="text-[11px] text-slate-700 mt-1">
-                    The compact badge inside each dot (for example{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      3d
-                    </code>
-                    ,{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      2w
-                    </code>
-                    ,{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      5m
-                    </code>
-                    , or{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      4y
-                    </code>
-                    ) is the remaining time in that bucket.
-                  </p>
-                  <p className="text-[11px] text-slate-700 mt-1">
-                    As deadlines approach, dots glide toward the outer edge of
-                    their quadrant. The faint 25/50/75 markers show how much
-                    runway remains inside that time range.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-
+          {/* Right: Tasks */}
+          <div
+            className="w-full xl:w-[320px] flex flex-col gap-3"
+            style={{ minHeight: sidebarMinHeight }}
+          >
             <Card className="flex-1 flex flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Tasks</CardTitle>
                 <CardDescription className="text-xs">
-                  Click a card or dot to focus. Edit, mark done, or remove
-                  tasks here.
+                  Select a dot or card to review and edit it right inside this
+                  panel.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-1 flex flex-col h-full">
+                <div className="mb-3">
+                  <p className="text-[11px] font-semibold mb-1">
+                    Selected task
+                  </p>
+                  {selectedTask ? (
+                    <div className="rounded-lg border border-slate-200 bg-white/80 p-3 text-[11px] space-y-1">
+                      <p className="font-semibold text-slate-900">
+                        {selectedTask.task}
+                      </p>
+                      <p className="text-slate-600">
+                        Remaining:{" "}
+                        <span className="font-semibold text-slate-900">
+                          {compactLabel(selectedTask)} (
+                          {selectedTask.remainingDays} days)
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Status:{" "}
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-[1px] text-[10px] font-semibold border ${
+                            selectedTask.finishedAt
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-sky-50 text-sky-700 border-sky-200"
+                          }`}
+                        >
+                          {selectedTask.finishedAt ? "Completed" : "Active"}
+                        </span>
+                      </p>
+                      {selectedTask.project && (
+                        <p className="text-slate-600">
+                          Project:{" "}
+                          <span className="font-semibold">
+                            {selectedTask.project}
+                          </span>
+                        </p>
+                      )}
+                      {selectedTask.projectTag && (
+                        <p className="text-slate-600">
+                          Tag:{" "}
+                          <span className="font-semibold">
+                            {selectedTask.projectTag}
+                          </span>
+                        </p>
+                      )}
+                      <p className="flex items-center gap-2 text-slate-600">
+                        Color:
+                        <span
+                          className="inline-flex h-3 w-6 rounded border border-slate-400"
+                          style={{
+                            backgroundColor: resolveProjectColor(
+                              selectedTask.project,
+                              selectedTask.projectColor
+                            ),
+                          }}
+                        />
+                        <span className="font-mono text-[10px]">
+                          {resolveProjectColor(
+                            selectedTask.project,
+                            selectedTask.projectColor
+                          )}
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Date:{" "}
+                        <span className="font-semibold">
+                          {selectedTask.date}
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Deadline:{" "}
+                        <span className="font-semibold">
+                          {formatDateMMDDYYYYFromISODate(
+                            selectedTask.deadline
+                          )}
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Region:{" "}
+                        <span className="text-amber-500 font-semibold">
+                          {stars(selectedTask.region)}
+                        </span>{" "}
+                        {regionRange(selectedTask.region)}
+                      </p>
+                      {selectedTask.finishedAt && (
+                        <p className="text-emerald-600">
+                          Finished:{" "}
+                          {formatDateMMDDYYYYFromISODateTime(
+                            selectedTask.finishedAt
+                          )}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        <Button
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          onClick={() => openEdit(selectedTask)}
+                        >
+                          Edit selected
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px]"
+                          onClick={() => markDone(selectedTask.id)}
+                        >
+                          Mark done
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px] text-red-600"
+                          onClick={() => deleteTask(selectedTask.id)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic">
+                      No task selected yet. Click any dot or task card to show
+                      its details here.
+                    </p>
+                  )}
+                </div>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Task view
+                  </p>
+                  <div className="inline-flex rounded-full border border-slate-200 bg-slate-100 p-1">
+                    {[
+                      { label: "All", value: "all" },
+                      { label: "Active", value: "active" },
+                      { label: "Done", value: "completed" },
+                    ].map((option) => {
+                      const isActive = taskFilter === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() =>
+                            setTaskFilter(option.value as TaskFilter)
+                          }
+                          className={`px-3 py-1 text-[11px] font-semibold rounded-full transition ${
+                            isActive
+                              ? "bg-slate-900 text-white shadow-sm"
+                              : "text-slate-600 hover:text-slate-900"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div className="mb-2 text-[11px] space-y-1">
                   <p className="font-semibold">Max tasks / region</p>
                   <div className="grid grid-cols-4 gap-2">
@@ -1964,8 +2014,10 @@ const Planner: React.FC = () => {
                   <div className="space-y-2">
                     {displayedTasks.length === 0 && (
                       <p className="text-[11px] text-slate-400">
-                        {focusedColor
-                          ? "No tasks yet for this color focus."
+                        {taskFilter === "completed"
+                          ? "No completed tasks yet."
+                          : taskFilter === "active"
+                          ? "All active tasks are done. Add a new one on the left."
                           : "No tasks yet. Add one on the left to populate the planner."}
                       </p>
                     )}
@@ -2091,6 +2143,137 @@ const Planner: React.FC = () => {
               </CardContent>
             </Card>
           </div>
+        </div>
+
+        <div className="mt-6">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Workspace activity</CardTitle>
+              <CardDescription className="text-xs">
+                Key indicators, regional balance, and the latest events.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-xs max-h-[520px] overflow-y-auto pr-2 space-y-4">
+              <div className="flex flex-wrap gap-3 text-[11px]">
+                {[
+                  { label: "Active tasks", value: activeCount },
+                  { label: "Completed", value: completedCount },
+                  { label: "Projects", value: projectCount },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"
+                  >
+                    <span className="font-semibold text-slate-900 text-base leading-none">
+                      {stat.value}
+                    </span>
+                    <span className="text-slate-500">{stat.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-700 mb-2">
+                  Active tasks by region
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[4, 3, 2, 1].map((region) => (
+                    <div
+                      key={region}
+                      className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                    >
+                      <div className="flex flex-col leading-tight">
+                        <span className="text-[11px] font-semibold text-amber-500">
+                          {stars(region as StarRegion)}
+                        </span>
+                        <span className="text-[10px] text-slate-600">
+                          {regionLabel(region as StarRegion)}
+                        </span>
+                      </div>
+                      <span className="text-sm font-semibold text-slate-900">
+                        {activeRegionCounts[region as StarRegion] ?? 0}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-700 mb-2">
+                  Upcoming deadlines
+                </p>
+                {dueSoonTasks.length === 0 ? (
+                  <p className="text-[11px] text-slate-400">
+                    Nothing on the horizon. Great job staying ahead!
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {dueSoonTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-[11px] font-semibold text-slate-900">
+                            {task.task}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {task.project || "Untitled project"}
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[11px] font-semibold text-slate-900 block">
+                            {formatDateMMDDYYYYFromISODate(task.deadline)}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {compactLabel(task)} left
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="border border-slate-200 rounded-xl bg-white p-3 space-y-3">
+                <p className="text-[11px] font-semibold text-slate-700">
+                  Projects overview
+                </p>
+                {projectSummaries.length === 0 ? (
+                  <p className="text-[11px] text-slate-400">
+                    Start a project to see breakdowns here.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {projectSummaries.map((project) => (
+                      <div
+                        key={project.key}
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span
+                            className="inline-flex h-4 w-4 rounded-full border border-slate-900"
+                            style={{ backgroundColor: project.color }}
+                          />
+                          <div>
+                            <p className="font-semibold text-slate-900">
+                              {project.label}
+                            </p>
+                            <p className="text-[11px] text-slate-600">
+                              {project.total} tasks &middot;{" "}
+                              {project.active} active
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          {project.active === 0
+                            ? "All done"
+                            : `${project.active} remaining`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* Initial setup dialog */}
