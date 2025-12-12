@@ -31,12 +31,15 @@ import { Textarea } from "@/components/ui/textarea";
 
 type StarRegion = 1 | 2 | 3 | 4;
 type TimeBucket = "days" | "weeks" | "months" | "years";
+type TaskFilter = "all" | "active" | "completed";
 
 interface Task {
   id: string;
   date: string; // yyyy-MM-dd
   deadline: string; // yyyy-MM-dd
   project: string;
+  projectTag?: string;
+  projectColor?: string;
   task: string;
   region: StarRegion;
   bucket: TimeBucket;
@@ -52,6 +55,19 @@ const STORAGE_MAX_KEY = "gplanner_v1_max_per_region";
 const STORAGE_LAST_CSV_NAME = "gplanner_v1_last_csv_name";
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
+const DEFAULT_PROJECT_COLOR = "#475569";
+const PROJECT_COLOR_PALETTE = [
+  "#0ea5e9",
+  "#f97316",
+  "#22c55e",
+  "#a855f7",
+  "#ec4899",
+  "#facc15",
+  "#06b6d4",
+  "#ef4444",
+  "#4ade80",
+  "#c084fc",
+];
 
 function todayISO(): string {
   const d = new Date();
@@ -59,6 +75,47 @@ function todayISO(): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function sanitizeHexColor(input?: string | null): string | undefined {
+  if (!input) return undefined;
+  const value = input.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(value)) return value.toLowerCase();
+  return undefined;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function fallbackProjectColor(project: string): string {
+  const key = project.trim().toLowerCase();
+  if (!key) return DEFAULT_PROJECT_COLOR;
+  const hash = hashString(key);
+  return PROJECT_COLOR_PALETTE[hash % PROJECT_COLOR_PALETTE.length];
+}
+
+function resolveProjectColor(project: string, color?: string): string {
+  return sanitizeHexColor(color) ?? fallbackProjectColor(project);
+}
+
+function ensureProjectColor(task: Task): Task {
+  const projectColor = resolveProjectColor(task.project, task.projectColor);
+  return { ...task, projectColor };
+}
+
+function textColorForBackground(hex: string): string {
+  const sanitized = sanitizeHexColor(hex);
+  if (!sanitized) return "#f8fafc";
+  const r = parseInt(sanitized.slice(1, 3), 16);
+  const g = parseInt(sanitized.slice(3, 5), 16);
+  const b = parseInt(sanitized.slice(5, 7), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? "#0f172a" : "#f8fafc";
 }
 
 function diffInDays(fromISO: string, toISO: string): number {
@@ -125,19 +182,6 @@ function compactLabel(task: Task): string {
   }
 }
 
-function colorForBucket(bucket: TimeBucket): string {
-  switch (bucket) {
-    case "days":
-      return "#ef4444"; // red
-    case "weeks":
-      return "#ca8a04"; // dark yellow
-    case "months":
-      return "#16a34a"; // green
-    case "years":
-      return "#0ea5e9"; // blue
-  }
-}
-
 function regionLabel(region: StarRegion): string {
   switch (region) {
     case 4:
@@ -183,6 +227,8 @@ function tasksToCSV(tasks: Task[]): string {
     "date",
     "deadline",
     "project",
+    "projectTag",
+    "projectColor",
     "task",
     "region",
     "bucket",
@@ -190,18 +236,27 @@ function tasksToCSV(tasks: Task[]): string {
     "createdAt",
     "finishedAt",
   ];
-  const rows = tasks.map((t) => [
-    t.id,
-    t.date,
-    t.deadline,
-    t.project.replace(/"/g, '""'),
-    t.task.replace(/"/g, '""'),
-    t.region.toString(),
-    t.bucket,
-    t.remainingDays.toString(),
-    t.createdAt,
-    t.finishedAt ?? "",
-  ]);
+  const rows = tasks.map((t) => {
+    const safeProject = t.project.replace(/"/g, '""');
+    const safeTask = t.task.replace(/"/g, '""');
+    const safeTag = (t.projectTag ?? "").replace(/"/g, '""');
+    const colorValue = resolveProjectColor(t.project, t.projectColor);
+    const safeColor = colorValue.replace(/"/g, '""');
+    return [
+      t.id,
+      t.date,
+      t.deadline,
+      safeProject,
+      safeTag,
+      safeColor,
+      safeTask,
+      t.region.toString(),
+      t.bucket,
+      t.remainingDays.toString(),
+      t.createdAt,
+      t.finishedAt ?? "",
+    ];
+  });
   const lines = [header.join(",")].concat(
     rows.map((r) =>
       r
@@ -261,6 +316,8 @@ function parseCSV(text: string): Task[] {
   const idxDate = idx("date");
   const idxDeadline = idx("deadline");
   const idxProject = idx("project");
+  const idxProjectTag = idx("projectTag");
+  const idxProjectColor = idx("projectColor");
   const idxTask = idx("task");
   const idxRegion = idx("region");
   const idxBucket = idx("bucket");
@@ -283,6 +340,9 @@ function parseCSV(text: string): Task[] {
     const bucket = (cols[idxBucket] as TimeBucket) || "days";
     const remainingDays = parseInt(cols[idxRemaining] || "1", 10);
     const project = cols[idxProject] || "";
+    const projectTag = (idxProjectTag >= 0 ? cols[idxProjectTag] : "") || "";
+    const projectColor =
+      (idxProjectColor >= 0 ? cols[idxProjectColor] : "") || "";
     const task = cols[idxTask] || "";
     const createdAt = cols[idxCreated] || new Date().toISOString();
     const finishedAt = cols[idxFinished] || undefined;
@@ -295,6 +355,8 @@ function parseCSV(text: string): Task[] {
       bucket,
       remainingDays,
       project,
+      projectTag,
+      projectColor,
       task,
       createdAt,
       finishedAt,
@@ -311,9 +373,11 @@ const Planner: React.FC = () => {
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const [today, setToday] = useState<string>(todayISO());
-  const [newDate, setNewDate] = useState<string>(todayISO());
   const [newDeadline, setNewDeadline] = useState<string>(todayISO());
   const [newProject, setNewProject] = useState("");
+  const [newProjectTag, setNewProjectTag] = useState("");
+  const [newProjectColor, setNewProjectColor] = useState(DEFAULT_PROJECT_COLOR);
+  const [projectColorAuto, setProjectColorAuto] = useState(true);
   const [newTask, setNewTask] = useState("");
 
   const [csvText, setCsvText] = useState("");
@@ -324,6 +388,8 @@ const Planner: React.FC = () => {
 
   const [editOpen, setEditOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
+  const [focusedColor, setFocusedColor] = useState<string>("");
+  const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
 
   const [initialSetupOpen, setInitialSetupOpen] = useState(false);
   const [hasShownInitial, setHasShownInitial] = useState(false);
@@ -340,6 +406,7 @@ const Planner: React.FC = () => {
   const [csvFileName, setCsvFileName] = useState<string>("planner_tasks");
 
   const [mounted, setMounted] = useState(false);
+  const [plannerSize, setPlannerSize] = useState(900);
 
   // ---- Load from storage on mount ----
   useEffect(() => {
@@ -349,7 +416,8 @@ const Planner: React.FC = () => {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed: Task[] = JSON.parse(raw);
-        if (Array.isArray(parsed)) setTasks(parsed);
+        if (Array.isArray(parsed))
+          setTasks(parsed.map((task) => ensureProjectColor(task)));
       }
     } catch {}
 
@@ -365,6 +433,21 @@ const Planner: React.FC = () => {
       const rawName = window.localStorage.getItem(STORAGE_LAST_CSV_NAME);
       if (rawName) setCsvFileName(rawName);
     } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateSize = () => {
+      const width = window.innerWidth || 0;
+      let reserved = 820;
+      if (width < 1280) reserved = 520;
+      if (width < 768) reserved = 48;
+      const available = Math.max(width - reserved, 320);
+      setPlannerSize(Math.min(available, 1080));
+    };
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
   }, []);
 
   // Show initial dialog once when empty
@@ -408,6 +491,231 @@ const Planner: React.FC = () => {
     [tasks, activeId]
   );
 
+  const projectTagLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const t of tasks) {
+      const projectKey = t.project.trim().toLowerCase();
+      if (!projectKey) continue;
+      if (t.projectTag && !lookup.has(projectKey)) {
+        lookup.set(projectKey, t.projectTag);
+      }
+    }
+    return lookup;
+  }, [tasks]);
+
+  const projectColorLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const t of tasks) {
+      const projectKey = t.project.trim().toLowerCase();
+      if (!projectKey) continue;
+      const color = resolveProjectColor(t.project, t.projectColor);
+      if (!lookup.has(projectKey)) lookup.set(projectKey, color);
+    }
+    return lookup;
+  }, [tasks]);
+
+  const handleNewProjectChange = (value: string) => {
+    setNewProject(value);
+    const key = value.trim().toLowerCase();
+    if (!key) {
+      setNewProjectTag("");
+      setProjectColorAuto(true);
+      setNewProjectColor(DEFAULT_PROJECT_COLOR);
+      return;
+    }
+    const suggested = projectTagLookup.get(key);
+    if (suggested) {
+      setNewProjectTag(suggested);
+    }
+    const suggestedColor = projectColorLookup.get(key);
+    if (suggestedColor) {
+      setProjectColorAuto(false);
+      setNewProjectColor(suggestedColor);
+      return;
+    }
+    if (projectColorAuto) {
+      setNewProjectColor(fallbackProjectColor(value));
+    }
+  };
+
+  const [colorPickerTarget, setColorPickerTarget] = useState<
+    null | "new" | "edit"
+  >(null);
+  const [colorPickerValue, setColorPickerValue] =
+    useState<string>(DEFAULT_PROJECT_COLOR);
+  const taskRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const plottedTasks = useMemo(
+    () => tasks.filter((t) => !t.finishedAt),
+    [tasks]
+  );
+
+  const colorOptions = useMemo(() => {
+    const map = new Map<
+      string,
+      { projects: Set<string>; count: number }
+    >();
+    for (const t of plottedTasks) {
+      const color = resolveProjectColor(t.project, t.projectColor);
+      if (!map.has(color)) {
+        map.set(color, { projects: new Set(), count: 0 });
+      }
+      const entry = map.get(color)!;
+      if (t.project.trim()) entry.projects.add(t.project.trim());
+      entry.count += 1;
+    }
+    return Array.from(map.entries())
+      .map(([color, data]) => {
+        const names = Array.from(data.projects);
+        let label = "No project name";
+        if (names.length === 1) label = names[0];
+        else if (names.length > 1)
+          label = `${names[0]} +${names.length - 1} more`;
+        return {
+          color,
+          label,
+          projectNames: names,
+          count: data.count,
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [plottedTasks]);
+
+  const focusColorInfo = useMemo(
+    () => colorOptions.find((opt) => opt.color === focusedColor),
+    [colorOptions, focusedColor]
+  );
+
+  const openColorPicker = (target: "new" | "edit") => {
+    setColorPickerTarget(target);
+    if (target === "new") {
+      setColorPickerValue(newProjectColor.toUpperCase());
+    } else if (target === "edit" && editTask) {
+      setColorPickerValue(
+        (
+          sanitizeHexColor(editTask.projectColor) ??
+          fallbackProjectColor(editTask.project)
+        ).toUpperCase()
+      );
+    } else {
+      setColorPickerValue(DEFAULT_PROJECT_COLOR.toUpperCase());
+    }
+  };
+
+  const applyColorSelection = (color?: string) => {
+    const normalized =
+      sanitizeHexColor(color ?? colorPickerValue) ??
+      (colorPickerTarget === "new"
+        ? fallbackProjectColor(newProject)
+        : editTask
+        ? fallbackProjectColor(editTask.project)
+        : DEFAULT_PROJECT_COLOR);
+    if (colorPickerTarget === "new") {
+      setProjectColorAuto(false);
+      setNewProjectColor(normalized);
+    } else if (colorPickerTarget === "edit" && editTask) {
+      setEditTask({ ...editTask, projectColor: normalized });
+    }
+    setColorPickerTarget(null);
+  };
+
+  const registerTaskRef = (id: string) => (el: HTMLDivElement | null) => {
+    if (el) {
+      taskRefs.current[id] = el;
+    } else {
+      delete taskRefs.current[id];
+    }
+  };
+
+  const displayedTasks = useMemo(() => {
+    const filtered = tasks.filter((t) => {
+      if (taskFilter === "active") return !t.finishedAt;
+      if (taskFilter === "completed") return !!t.finishedAt;
+      return true;
+    });
+    if (!focusedColor) return filtered;
+    return filtered.filter(
+      (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
+    );
+  }, [tasks, focusedColor, taskFilter]);
+
+  const projectSummaries = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        total: number;
+        active: number;
+        color: string;
+      }
+    >();
+
+    for (const task of tasks) {
+      const trimmed = task.project.trim();
+      const key = trimmed.toLowerCase() || "__no_project";
+      const color = resolveProjectColor(task.project, task.projectColor);
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: trimmed || "No project name",
+          total: 0,
+          active: 0,
+          color,
+        });
+      }
+      const entry = map.get(key)!;
+      entry.total += 1;
+      if (!task.finishedAt) entry.active += 1;
+      // refresh color to latest non-empty assignment
+      entry.color = color;
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.total - a.total);
+  }, [tasks]);
+
+  const { activeCount, completedCount } = useMemo(() => {
+    let active = 0;
+    let done = 0;
+    for (const t of tasks) {
+      if (t.finishedAt) done++;
+      else active++;
+    }
+    return { activeCount: active, completedCount: done };
+  }, [tasks]);
+  const totalTasks = tasks.length;
+  const completionRate =
+    totalTasks === 0 ? 0 : Math.round((completedCount / totalTasks) * 100);
+
+  const projectCount = useMemo(() => {
+    const projects = new Set<string>();
+    for (const t of tasks) {
+      const name = t.project.trim().toLowerCase();
+      if (name) projects.add(name);
+    }
+    return projects.size;
+  }, [tasks]);
+
+  const activeRegionCounts = useMemo(() => {
+    const totals: Record<StarRegion, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    for (const t of tasks) {
+      if (!t.finishedAt) {
+        totals[t.region] = (totals[t.region] ?? 0) + 1;
+      }
+    }
+    return totals;
+  }, [tasks]);
+
+  const dueSoonTasks = useMemo(
+    () =>
+      tasks
+        .filter((t) => !t.finishedAt)
+        .slice()
+        .sort((a, b) => a.deadline.localeCompare(b.deadline))
+        .slice(0, 3),
+    [tasks]
+  );
+
   useEffect(() => {
     if (!activeId && tasks.length > 0) {
       setActiveId(tasks[0].id);
@@ -415,6 +723,39 @@ const Planner: React.FC = () => {
       setActiveId(tasks[0]?.id ?? null);
     }
   }, [tasks, activeId]);
+
+  useEffect(() => {
+    if (!focusedColor) return;
+    const stillExists = plottedTasks.some(
+      (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
+    );
+    if (!stillExists) setFocusedColor("");
+  }, [focusedColor, plottedTasks]);
+
+  useEffect(() => {
+    if (!focusedColor) return;
+    const current = tasks.find((t) => t.id === activeId);
+    if (
+      current &&
+      resolveProjectColor(current.project, current.projectColor) === focusedColor
+    ) {
+      return;
+    }
+    const next = plottedTasks.find(
+      (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
+    );
+    if (next) {
+      setActiveId(next.id);
+    }
+  }, [focusedColor, plottedTasks, tasks, activeId]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    const el = taskRefs.current[activeId];
+    if (el && el.scrollIntoView) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [activeId]);
 
   // ---- Add / edit / delete ----
 
@@ -429,7 +770,9 @@ const Planner: React.FC = () => {
     }
 
     const { region, bucket } = info;
-    const regionCount = tasks.filter((t) => t.region === region).length;
+    const regionCount = tasks.filter(
+      (t) => t.region === region && !t.finishedAt
+    ).length;
     if (regionCount >= maxPerRegion[region]) {
       alert(
         `Region ${stars(region)} ${regionLabel(
@@ -439,11 +782,16 @@ const Planner: React.FC = () => {
       return;
     }
 
+    const trimmedTag = newProjectTag.trim();
+    const colorValue = resolveProjectColor(newProject, newProjectColor);
+
     const t: Task = {
       id: `task-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      date: newDate,
+      date: today,
       deadline: newDeadline,
       project: newProject.trim(),
+      projectTag: trimmedTag || undefined,
+      projectColor: colorValue,
       task: newTask.trim(),
       region,
       bucket,
@@ -454,6 +802,7 @@ const Planner: React.FC = () => {
     setTasks((prev) => [...prev, t]);
     setActiveId(t.id);
     setNewTask("");
+    setProjectColorAuto(true);
   };
 
   const deleteTask = (id: string) => {
@@ -469,7 +818,10 @@ const Planner: React.FC = () => {
   };
 
   const openEdit = (task: Task) => {
-    setEditTask(task);
+    setEditTask({
+      ...task,
+      projectColor: resolveProjectColor(task.project, task.projectColor),
+    });
     setEditOpen(true);
   };
 
@@ -485,10 +837,21 @@ const Planner: React.FC = () => {
 
     const { region, bucket } = info;
 
+    const normalizedColor = resolveProjectColor(
+      editTask.project,
+      editTask.projectColor
+    );
+
     setTasks((prev) =>
       prev.map((t) =>
         t.id === editTask.id
-          ? { ...editTask, region, bucket, remainingDays: remaining }
+          ? {
+              ...editTask,
+              projectColor: normalizedColor,
+              region,
+              bucket,
+              remainingDays: remaining,
+            }
           : t
       )
     );
@@ -520,6 +883,15 @@ const Planner: React.FC = () => {
         )} (${t.remainingDays} days left)`
       );
       if (t.project) lines.push(`  Project: ${t.project}`);
+      if (t.projectColor) {
+        lines.push(
+          `  Project color: ${resolveProjectColor(
+            t.project,
+            t.projectColor
+          )}`
+        );
+      }
+      if (t.projectTag) lines.push(`  Tag: ${t.projectTag}`);
       lines.push(`  Task: ${t.task}`);
       lines.push(`  Date: ${t.date}`);
       lines.push(`  Deadline: ${dl}`);
@@ -573,7 +945,7 @@ const Planner: React.FC = () => {
         alert("No tasks found in CSV.");
         return;
       }
-      setTasks(parsed);
+      setTasks(parsed.map((task) => ensureProjectColor(task)));
       setCsvText(text);
     };
     reader.readAsText(file);
@@ -596,7 +968,7 @@ const Planner: React.FC = () => {
         alert("No tasks found in CSV file.");
         return;
       }
-      setTasks(parsed);
+      setTasks(parsed.map((task) => ensureProjectColor(task)));
       setCsvText(text);
     } catch (err) {
       console.error(err);
@@ -614,22 +986,28 @@ const Planner: React.FC = () => {
   }
 
   const geometry = useMemo(() => {
-    const size = 900;
+    const size = plannerSize;
     const cx = size / 2;
     const cy = size / 2;
     const padding = 60;
     const maxR = size / 2 - padding;
     const ringRadii = [0.25, 0.5, 0.75].map((p) => p * maxR);
     return { size, cx, cy, maxR, ringRadii };
-  }, []);
+  }, [plannerSize]);
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
   const regionAngles: Record<StarRegion, { start: number; end: number }> = {
-    4: { start: 180, end: 270 }, // TL
-    3: { start: 270, end: 360 }, // TR
-    2: { start: 90, end: 180 }, // BL
-    1: { start: 0, end: 90 }, // BR
+    4: { start: 90, end: 180 }, // TL – Important/Urgent (days)
+    3: { start: 0, end: 90 }, // TR – Important/Not Urgent (weeks)
+    2: { start: 180, end: 270 }, // BL – Not important/Urgent (months)
+    1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
+  };
+  const regionBackgroundFills: Record<StarRegion, string> = {
+    4: "#f5f5f5",
+    3: "#ededed",
+    2: "#e6e6e6",
+    1: "#dedede",
   };
 
   const stepsForBucket: Record<TimeBucket, number> = {
@@ -665,6 +1043,14 @@ const Planner: React.FC = () => {
     return 1;
   };
 
+  const urgencyProgress = (t: Task): number => {
+    const nSteps = stepsForBucket[t.bucket];
+    const step = remainingToStep(t);
+    if (nSteps <= 1) return 1;
+    const raw = 1 - (step - 1) / (nSteps - 1);
+    return Math.min(1, Math.max(0, raw));
+  };
+
   const stepToRemainingDays = (bucket: TimeBucket, step: number): number => {
     const s = Math.max(1, step);
     switch (bucket) {
@@ -679,19 +1065,51 @@ const Planner: React.FC = () => {
     }
   };
 
+  const minRadiusFactor =
+    ringRadii.length > 0 ? ringRadii[0] / maxR : 0.25;
+  const maxRadiusFactor = 0.97;
+  const radiusFactorRange = Math.max(0.01, maxRadiusFactor - minRadiusFactor);
+
   const dotPositions: Record<string, DotPosition> = useMemo(() => {
     const positions: Record<string, DotPosition> = {};
-    const perRegionCounts: Record<StarRegion, number> = {
+    const blankLaneNext: Record<StarRegion, number> = {
       1: 0,
       2: 0,
       3: 0,
       4: 0,
     };
+    const colorLaneMap: Record<StarRegion, Map<string, number>> = {
+      1: new Map(),
+      2: new Map(),
+      3: new Map(),
+      4: new Map(),
+    };
 
-    for (const t of tasks) {
-      const idx = perRegionCounts[t.region]++;
+    const regions: StarRegion[] = [1, 2, 3, 4];
+    regions.forEach((region) => {
+      const lanes = Math.max(1, Math.min(10, maxPerRegion[region]));
+      const uniqueColors = Array.from(
+        new Set(
+          plottedTasks
+            .filter((t) => t.region === region)
+            .map((t) => resolveProjectColor(t.project, t.projectColor))
+        )
+      );
+      uniqueColors.forEach((color, idx) => {
+        colorLaneMap[region].set(color, idx % lanes);
+      });
+    });
+
+    for (const t of plottedTasks) {
       const lanes = Math.max(1, Math.min(10, maxPerRegion[t.region]));
-      const laneIndex = idx % lanes;
+      const colorKey = resolveProjectColor(t.project, t.projectColor);
+      let laneIndex =
+        colorLaneMap[t.region].get(colorKey) ??
+        (blankLaneNext[t.region] % lanes);
+      if (!colorLaneMap[t.region].has(colorKey)) {
+        colorLaneMap[t.region].set(colorKey, laneIndex);
+        blankLaneNext[t.region]++;
+      }
 
       const angleRange = regionAngles[t.region];
       const angleDeg =
@@ -699,19 +1117,29 @@ const Planner: React.FC = () => {
         ((angleRange.end - angleRange.start) * (laneIndex + 0.5)) / lanes;
       const angleRad = (angleDeg * Math.PI) / 180;
 
-      const nSteps = stepsForBucket[t.bucket];
-      const step = remainingToStep(t);
-      const frac = step / nSteps;
-      const r = maxR * (0.15 + 0.8 * frac);
+      const progress = urgencyProgress(t);
+      const radiusFactor =
+        minRadiusFactor + radiusFactorRange * progress;
+      const r = maxR * radiusFactor;
 
       const x = cx + r * Math.cos(angleRad);
       const y = cy - r * Math.sin(angleRad);
 
-      positions[t.id] = { x, y, radiusNorm: frac, laneIndex };
+      positions[t.id] = { x, y, radiusNorm: progress, laneIndex };
     }
 
     return positions;
-  }, [tasks, cx, cy, maxR, regionAngles, stepsForBucket, maxPerRegion]);
+  }, [
+    plottedTasks,
+    cx,
+    cy,
+    maxR,
+    regionAngles,
+    stepsForBucket,
+    maxPerRegion,
+    minRadiusFactor,
+    radiusFactorRange,
+  ]);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -743,15 +1171,27 @@ const Planner: React.FC = () => {
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < 5) return;
 
-    const frac = Math.min(Math.max(dist / maxR, 0.1), 0.95);
+    const distFactor = Math.min(
+      Math.max(dist / maxR, minRadiusFactor),
+      maxRadiusFactor
+    );
+    const progress = Math.min(
+      Math.max((distFactor - minRadiusFactor) / radiusFactorRange, 0),
+      1
+    );
 
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== draggingId) return t;
         const nSteps = stepsForBucket[t.bucket];
-        let step = Math.round(frac * nSteps);
-        if (step < 1) step = 1;
-        if (step > nSteps) step = nSteps;
+        let step = 1;
+        if (nSteps <= 1) {
+          step = 1;
+        } else {
+          step = Math.round((1 - progress) * (nSteps - 1) + 1);
+          if (step < 1) step = 1;
+          if (step > nSteps) step = nSteps;
+        }
 
         const newRemaining = stepToRemainingDays(t.bucket, step);
         const newDeadline = addDays(today, newRemaining);
@@ -779,51 +1219,154 @@ const Planner: React.FC = () => {
   };
 
   const dotRadius = (t: Task): number => {
-    const nSteps = stepsForBucket[t.bucket];
-    const step = remainingToStep(t);
-    const base = 6;
-    const maxExtra = 6;
-    const frac = step / nSteps;
-    return base + maxExtra * frac;
+    const progress = urgencyProgress(t);
+    const base = 9;
+    const maxExtra = 9;
+    return base + maxExtra * progress;
   };
 
   const buildRadialGuides = () => {
     if (!mounted) return null; // avoid SSR float mismatch
     const lanes = 10;
-    const lines: JSX.Element[] = [];
+    const lines: React.ReactElement[] = [];
 
+    (Object.keys(regionAngles) as StarRegion[]).forEach((region) => {
+      const angleRange = regionAngles[region];
+      for (let lane = 0; lane < lanes; lane++) {
+        const angleDeg =
+          angleRange.start +
+          ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
+        const angleRad = (angleDeg * Math.PI) / 180;
+        const x2 = cx + maxR * Math.cos(angleRad);
+        const y2 = cy - maxR * Math.sin(angleRad);
+        const x2r = parseFloat(x2.toFixed(6));
+        const y2r = parseFloat(y2.toFixed(6));
+
+        lines.push(
+          <line
+            key={`${region}-${lane}`}
+            x1={cx}
+            y1={cy}
+            x2={x2r}
+            y2={y2r}
+            stroke="#cbd5f5"
+            strokeWidth={1.4}
+            strokeDasharray="3 4"
+            opacity={0.9}
+          />
+        );
+      }
+    });
+
+    return lines;
+  };
+
+  const renderRegionBackgrounds = () => {
+    const wedges: JSX.Element[] = [];
     (Object.keys(regionAngles) as Array<keyof typeof regionAngles>).forEach(
       (key) => {
         const region = key as StarRegion;
-        const angleRange = regionAngles[region];
-        for (let lane = 0; lane < lanes; lane++) {
-          const angleDeg =
-            angleRange.start +
-            ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
-          const angleRad = (angleDeg * Math.PI) / 180;
-          const x2 = cx + maxR * Math.cos(angleRad);
-          const y2 = cy - maxR * Math.sin(angleRad);
-          const x2r = parseFloat(x2.toFixed(6));
-          const y2r = parseFloat(y2.toFixed(6));
-
-          lines.push(
-            <line
-              key={`${region}-${lane}`}
-              x1={cx}
-              y1={cy}
-              x2={x2r}
-              y2={y2r}
-              stroke="#e5e7eb"
-              strokeWidth={1}
-              strokeDasharray="3 5"
-              opacity={0.7}
-            />
-          );
-        }
+        const { start, end } = regionAngles[region];
+        const startRad = (start * Math.PI) / 180;
+        const endRad = (end * Math.PI) / 180;
+        const x1 = cx + maxR * Math.cos(startRad);
+        const y1 = cy - maxR * Math.sin(startRad);
+        const x2 = cx + maxR * Math.cos(endRad);
+        const y2 = cy - maxR * Math.sin(endRad);
+        const largeArc = Math.abs(end - start) > 180 ? 1 : 0;
+        const pathD = [
+          `M ${cx} ${cy}`,
+          `L ${x1} ${y1}`,
+          `A ${maxR} ${maxR} 0 ${largeArc} 0 ${x2} ${y2}`,
+          "Z",
+        ].join(" ");
+        wedges.push(
+          <path
+            key={`region-bg-${region}`}
+            d={pathD}
+            fill={regionBackgroundFills[region]}
+            opacity={0.5}
+            stroke="none"
+          />
+        );
       }
     );
+    return wedges;
+  };
 
-    return lines;
+  const renderQuadrantLabels = () => {
+    const boxWidth = 210;
+    const boxHeight = 48;
+    const data = [
+      {
+        key: "q4",
+        x: cx - maxR / 2 - 96,
+        y: cy - maxR + 20,
+        stars: "★★★★",
+        label: "Important · Urgent",
+      },
+      {
+        key: "q3",
+        x: cx + maxR / 2 + 96,
+        y: cy - maxR + 20,
+        stars: "★★★",
+        label: "Important · Not urgent",
+      },
+      {
+        key: "q2",
+        x: cx - maxR / 2 - 96,
+        y: cy + maxR - 16,
+        stars: "★★",
+        label: "Not important · Urgent",
+      },
+      {
+        key: "q1",
+        x: cx + maxR / 2 + 96,
+        y: cy + maxR - 16,
+        stars: "★",
+        label: "Not important · Not urgent",
+      },
+    ];
+
+    return data.map((item) => {
+      const boxX = item.x - boxWidth / 2;
+      const boxY = item.y - boxHeight / 2;
+      return (
+        <g key={item.key}>
+          <rect
+            x={boxX}
+            y={boxY}
+            width={boxWidth}
+            height={boxHeight}
+            rx={14}
+            fill="white"
+            stroke="#e2e8f0"
+            strokeWidth={1}
+            opacity={0.95}
+          />
+          <text
+            x={item.x}
+            y={item.y - 6}
+            textAnchor="middle"
+            fontSize={13}
+            fontWeight={700}
+            fill="#d4af37"
+          >
+            {item.stars}
+          </text>
+          <text
+            x={item.x}
+            y={item.y + 12}
+            textAnchor="middle"
+            fontSize={11}
+            fontWeight={600}
+            fill="#0f172a"
+          >
+            {item.label}
+          </text>
+        </g>
+      );
+    });
   };
 
   const handleInitialChoice = (choice: "create" | "load") => {
@@ -837,11 +1380,12 @@ const Planner: React.FC = () => {
   };
 
   // ---- Render ----
+  const sidebarMinHeight = Math.min(plannerSize, 760);
 
   return (
     <div className="w-full min-h-screen bg-slate-50 text-slate-900 flex justify-center">
       <div className="max-w-[1800px] w-full px-6 py-6">
-        <div className="flex items-baseline justify-between mb-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-3 mb-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">
               gPlanner
@@ -862,13 +1406,54 @@ const Planner: React.FC = () => {
             </Button>
           </div>
         </div>
+        <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 mb-6 text-center">
+        {[
+          {
+            label: "Urgent / Important",
+            value: tasks.filter(
+              (task) => task.region === 4 && !task.finishedAt
+            ).length,
+            highlight: true,
+          },
+          { label: "Active", value: activeCount },
+          { label: "Completed", value: completedCount },
+          {
+            label: "Completion",
+            value: `${completionRate}%`,
+          },
+          { label: "Projects", value: projectCount },
+          { label: "Total tasks", value: totalTasks },
+        ].map((stat) => (
+            <div
+              key={stat.label}
+              className={`rounded-2xl border px-3 py-2.5 shadow-sm ${
+                stat.highlight
+                  ? "border-red-200 bg-red-50"
+                  : "border-slate-200 bg-white"
+              }`}
+            >
+              <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">
+                {stat.label}
+              </p>
+              <p className="text-xl font-bold text-slate-900 mt-1">
+                {stat.value}
+              </p>
+            </div>
+          ))}
+        </div>
 
-        <div className="flex gap-4 items-start">
-          {/* Left: New + Selected */}
-          <div className="w-[340px] flex flex-col gap-3">
-            <Card>
+        <div className="flex flex-col xl:flex-row gap-4 items-stretch">
+          {/* Left: New */}
+          <div
+            className="w-full xl:w-[320px] flex flex-col gap-3"
+            style={{ minHeight: sidebarMinHeight }}
+          >
+            <Card className="flex-1 flex flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">New task</CardTitle>
+                <CardDescription className="text-xs">
+                  Capture the essentials and we will place it on the map.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2">
                 <div className="grid grid-cols-[auto,1fr] gap-x-2 gap-y-2 items-center">
@@ -880,17 +1465,6 @@ const Planner: React.FC = () => {
                     type="date"
                     value={today}
                     onChange={(e) => setToday(e.target.value)}
-                    className="h-8 text-xs"
-                  />
-
-                  <label htmlFor="date" className="text-xs">
-                    Date
-                  </label>
-                  <Input
-                    id="date"
-                    type="date"
-                    value={newDate}
-                    onChange={(e) => setNewDate(e.target.value)}
                     className="h-8 text-xs"
                   />
 
@@ -911,10 +1485,51 @@ const Planner: React.FC = () => {
                   <Input
                     id="project"
                     value={newProject}
-                    onChange={(e) => setNewProject(e.target.value)}
+                    onChange={(e) => handleNewProjectChange(e.target.value)}
                     className="h-8 text-xs"
                     placeholder="Optional"
                   />
+
+                  <label htmlFor="project-tag" className="text-xs">
+                    Project tag
+                  </label>
+                  <Input
+                    id="project-tag"
+                    value={newProjectTag}
+                    onChange={(e) => setNewProjectTag(e.target.value)}
+                    className="h-8 text-xs"
+                    placeholder="Short label (e.g., LAB)"
+                  />
+
+                  <label htmlFor="project-color" className="text-xs">
+                    Project color
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      id="project-color"
+                      type="button"
+                      onClick={() => openColorPicker("new")}
+                      className="flex items-center gap-2 rounded-md border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-800 shadow-sm hover:border-slate-500"
+                    >
+                      <span
+                        className="inline-flex h-4 w-4 rounded-full border border-slate-900"
+                        style={{ backgroundColor: newProjectColor }}
+                      />
+                      {newProjectColor.toUpperCase()}
+                    </button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="text-[11px]"
+                      onClick={() => {
+                        setProjectColorAuto(true);
+                        setNewProjectColor(fallbackProjectColor(newProject));
+                      }}
+                    >
+                      Auto
+                    </Button>
+                  </div>
 
                   <label htmlFor="task" className="text-xs">
                     Task
@@ -1000,79 +1615,16 @@ const Planner: React.FC = () => {
               </CardContent>
             </Card>
 
-            <Card className="flex-1">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Selected task</CardTitle>
-                <CardDescription className="text-xs">
-                  Details for the currently selected dot.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="pt-1 text-xs space-y-1">
-                {selectedTask ? (
-                  <>
-                    <p className="font-semibold">
-                      Remaining Time:{" "}
-                      <span className="font-bold">
-                        {compactLabel(selectedTask)} (
-                        {selectedTask.remainingDays} days remaining)
-                      </span>
-                    </p>
-                    {selectedTask.project && (
-                      <p>
-                        <span className="font-semibold">Project:</span>{" "}
-                        {selectedTask.project}
-                      </p>
-                    )}
-                    <p>
-                      <span className="font-semibold">Task:</span>{" "}
-                      {selectedTask.task}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Date:</span>{" "}
-                      {selectedTask.date}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Deadline:</span>{" "}
-                      {formatDateMMDDYYYYFromISODate(
-                        selectedTask.deadline
-                      )}
-                    </p>
-                    <p>
-                      <span className="font-semibold">Region:</span>{" "}
-                      <span className="text-amber-400 font-semibold">
-                        {stars(selectedTask.region)}
-                      </span>{" "}
-                      {regionRange(selectedTask.region)}{" "}
-                      <span className="text-slate-500">
-                        ({regionLabel(selectedTask.region)})
-                      </span>
-                    </p>
-                    {selectedTask.finishedAt && (
-                      <p>
-                        <span className="font-semibold">Finished:</span>{" "}
-                        {formatDateMMDDYYYYFromISODateTime(
-                          selectedTask.finishedAt
-                        )}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-slate-400 italic text-xs">
-                    No task selected. Click a dot or a task card.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
           </div>
 
           {/* Center: geometry planner */}
-          <div className="flex-1 flex flex-col items-center">
-            <div className="relative flex justify-center items-center">
+          <div className="flex-1 flex flex-col items-center w-full px-0 xl:px-2">
+            <div className="relative flex justify-center items-center w-full">
               <svg
                 ref={svgRef}
                 width={size}
                 height={size}
-                className="rounded-3xl bg-slate-100 shadow-inner border border-slate-200"
+                className="rounded-3xl bg-slate-100 shadow-inner border border-slate-200 max-w-full"
                 onPointerMove={handleDotPointerMove}
                 onPointerUp={handleDotPointerUp}
                 onPointerLeave={handleDotPointerUp}
@@ -1083,9 +1635,13 @@ const Planner: React.FC = () => {
                   cy={cy}
                   r={maxR}
                   fill="#f9fafb"
-                  stroke="#e5e7eb"
-                  strokeWidth={2}
+                  stroke="#ffffff"
+                  strokeWidth={3}
+                  strokeDasharray="8 6"
                 />
+
+                {/* region backgrounds */}
+                {renderRegionBackgrounds()}
 
                 {/* axes */}
                 <line
@@ -1093,16 +1649,18 @@ const Planner: React.FC = () => {
                   y1={cy}
                   x2={cx + maxR}
                   y2={cy}
-                  stroke="#d1d5db"
-                  strokeWidth={1.5}
+                  stroke="#b45309"
+                  strokeWidth={2}
+                  strokeDasharray="5 5"
                 />
                 <line
                   x1={cx}
                   y1={cy - maxR}
                   x2={cx}
                   y2={cy + maxR}
-                  stroke="#d1d5db"
-                  strokeWidth={1.5}
+                  stroke="#b45309"
+                  strokeWidth={2}
+                  strokeDasharray="5 5"
                 />
 
                 {/* rings */}
@@ -1113,9 +1671,9 @@ const Planner: React.FC = () => {
                     cy={cy}
                     r={r}
                     fill="none"
-                    stroke="#e5e7eb"
-                    strokeWidth={1}
-                    strokeDasharray="4 4"
+                    stroke="#cbd5f5"
+                    strokeWidth={1.6}
+                    strokeDasharray="3 6"
                   />
                 ))}
 
@@ -1124,66 +1682,46 @@ const Planner: React.FC = () => {
 
                 {/* percentage labels on right */}
                 {ringRadii.map((r, idx) => {
-                  const perc = [25, 50, 75][idx];
+                  const perc = [75, 50, 25][idx];
                   return (
                     <text
                       key={idx}
                       x={cx + r + 24}
                       y={cy + 4}
-                      fontSize={11}
-                      fill="#6b7280"
+                      fontSize={12}
+                      fontWeight={700}
+                      fill="#0f172a"
                     >
-                      {perc}% time left
+                      {perc}%
                     </text>
                   );
                 })}
 
                 {/* quadrant labels – order kept: 4★, 3★, 2★, 1★ */}
-                <text
-                  x={cx - maxR / 2}
-                  y={cy - maxR + 20}
-                  textAnchor="middle"
-                  fontSize={12}
-                  fill="#111827"
-                >
-                  ★★★★ Important · Urgent
-                </text>
-                <text
-                  x={cx + maxR / 2}
-                  y={cy - maxR + 20}
-                  textAnchor="middle"
-                  fontSize={12}
-                  fill="#111827"
-                >
-                  ★★★ Important · Not urgent
-                </text>
-                <text
-                  x={cx - maxR / 2}
-                  y={cy + maxR - 16}
-                  textAnchor="middle"
-                  fontSize={12}
-                  fill="#111827"
-                >
-                  ★★ Not important · Urgent
-                </text>
-                <text
-                  x={cx + maxR / 2}
-                  y={cy + maxR - 16}
-                  textAnchor="middle"
-                  fontSize={12}
-                  fill="#111827"
-                >
-                  ★ Not important · Not urgent
-                </text>
+                {renderQuadrantLabels()}
 
                 {/* dots */}
-                {tasks.map((t) => {
+                {plottedTasks.map((t) => {
                   const pos = dotPositions[t.id];
                   if (!pos) return null;
                   const r = dotRadius(t);
                   const label = compactLabel(t);
                   const isActive = t.id === activeId;
-                  const strokeColor = isActive ? "#f97316" : "#020617";
+                  const taskColor = resolveProjectColor(t.project, t.projectColor);
+                  const isDimmed = focusedColor
+                    ? taskColor !== focusedColor
+                    : false;
+                  const fillColor = taskColor;
+                  const strokeColor = isActive ? "#0f172a" : fillColor;
+                  const strokeWidth = isActive ? 3 : 0;
+                  const tagLabel = t.projectTag?.trim();
+                  const baseOpacity = t.finishedAt ? 0.4 : 0.95;
+                  const circleOpacity = isDimmed ? 0.18 : baseOpacity;
+                  const labelOpacity = isDimmed ? 0.35 : 1;
+                  const tagColor = isDimmed ? "#94a3b8" : "#0f172a";
+                  const textColor = isDimmed
+                    ? "#f8fafc"
+                    : textColorForBackground(fillColor);
 
                   return (
                     <g
@@ -1195,10 +1733,10 @@ const Planner: React.FC = () => {
                         cx={pos.x}
                         cy={pos.y}
                         r={r}
-                        fill={colorForBucket(t.bucket)}
+                        fill={fillColor}
                         stroke={strokeColor}
-                        strokeWidth={isActive ? 2.5 : 1.5}
-                        opacity={t.finishedAt ? 0.4 : 0.95}
+                        strokeWidth={strokeWidth}
+                        opacity={circleOpacity}
                       />
                       <text
                         x={pos.x}
@@ -1206,10 +1744,23 @@ const Planner: React.FC = () => {
                         textAnchor="middle"
                         fontSize={Math.max(9, r - 2)}
                         fontWeight={700}
-                        fill="#f9fafb"
+                        fill={textColor}
+                        opacity={labelOpacity}
                       >
                         {label}
                       </text>
+                      {tagLabel && (
+                        <text
+                          x={pos.x}
+                          y={pos.y + r + 12}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fontWeight={600}
+                          fill={tagColor}
+                        >
+                          {tagLabel}
+                        </text>
+                      )}
                     </g>
                   );
                 })}
@@ -1217,74 +1768,174 @@ const Planner: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Geometry legend + tasks */}
-          <div className="w-[360px] flex flex-col gap-3">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Geometry Time</CardTitle>
-                <CardDescription className="text-xs">
-                  How colors and stars map to time.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs space-y-2">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-3 rounded-full bg-red-500 border border-slate-900" />
-                    <span>Days (1–7 d) – ★★★★ Important · Urgent</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-3 rounded-full bg-yellow-600 border border-slate-900" />
-                    <span>Weeks (1–4 w) – ★★★ Important · Not urgent</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-3 rounded-full bg-emerald-500 border border-slate-900" />
-                    <span>Months (1–12 m) – ★★ Not important · Urgent</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-3 rounded-full bg-sky-500 border border-slate-900" />
-                    <span>
-                      Years (1–10 y) – ★ Not important · Not urgent
-                    </span>
-                  </div>
-                </div>
-                <div className="pt-2 border-t border-slate-200 mt-2">
-                  <p className="text-[11px] text-slate-600">
-                    Inside each dot you see a compact label like{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      3d
-                    </code>
-                    ,{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      2w
-                    </code>
-                    ,{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      5m
-                    </code>
-                    , or{" "}
-                    <code className="bg-slate-100 px-1 rounded text-[10px]">
-                      4y
-                    </code>{" "}
-                    indicating remaining time in that scale.
-                  </p>
-                  <p className="text-[11px] text-slate-600 mt-1">
-                    As deadlines approach, dots move toward the outer edge of
-                    their region. The percentage labels (25%, 50%, 75%) mark how
-                    much of the region’s time range is left.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-
+          {/* Right: Tasks */}
+          <div
+            className="w-full xl:w-[320px] flex flex-col gap-3"
+            style={{ minHeight: sidebarMinHeight }}
+          >
             <Card className="flex-1 flex flex-col">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Tasks</CardTitle>
                 <CardDescription className="text-xs">
-                  Click a card or dot to focus. Edit, mark done, or remove
-                  tasks here.
+                  Select a dot or card to review and edit it right inside this
+                  panel.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-1 flex flex-col h-full">
+                <div className="mb-3">
+                  <p className="text-[11px] font-semibold mb-1">
+                    Selected task
+                  </p>
+                  {selectedTask ? (
+                    <div className="rounded-lg border border-slate-200 bg-white/80 p-3 text-[11px] space-y-1">
+                      <p className="font-semibold text-slate-900">
+                        {selectedTask.task}
+                      </p>
+                      <p className="text-slate-600">
+                        Remaining:{" "}
+                        <span className="font-semibold text-slate-900">
+                          {compactLabel(selectedTask)} (
+                          {selectedTask.remainingDays} days)
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Status:{" "}
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-[1px] text-[10px] font-semibold border ${
+                            selectedTask.finishedAt
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-sky-50 text-sky-700 border-sky-200"
+                          }`}
+                        >
+                          {selectedTask.finishedAt ? "Completed" : "Active"}
+                        </span>
+                      </p>
+                      {selectedTask.project && (
+                        <p className="text-slate-600">
+                          Project:{" "}
+                          <span className="font-semibold">
+                            {selectedTask.project}
+                          </span>
+                        </p>
+                      )}
+                      {selectedTask.projectTag && (
+                        <p className="text-slate-600">
+                          Tag:{" "}
+                          <span className="font-semibold">
+                            {selectedTask.projectTag}
+                          </span>
+                        </p>
+                      )}
+                      <p className="flex items-center gap-2 text-slate-600">
+                        Color:
+                        <span
+                          className="inline-flex h-3 w-6 rounded border border-slate-400"
+                          style={{
+                            backgroundColor: resolveProjectColor(
+                              selectedTask.project,
+                              selectedTask.projectColor
+                            ),
+                          }}
+                        />
+                        <span className="font-mono text-[10px]">
+                          {resolveProjectColor(
+                            selectedTask.project,
+                            selectedTask.projectColor
+                          )}
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Date:{" "}
+                        <span className="font-semibold">
+                          {selectedTask.date}
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Deadline:{" "}
+                        <span className="font-semibold">
+                          {formatDateMMDDYYYYFromISODate(
+                            selectedTask.deadline
+                          )}
+                        </span>
+                      </p>
+                      <p className="text-slate-600">
+                        Region:{" "}
+                        <span className="text-amber-500 font-semibold">
+                          {stars(selectedTask.region)}
+                        </span>{" "}
+                        {regionRange(selectedTask.region)}
+                      </p>
+                      {selectedTask.finishedAt && (
+                        <p className="text-emerald-600">
+                          Finished:{" "}
+                          {formatDateMMDDYYYYFromISODateTime(
+                            selectedTask.finishedAt
+                          )}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        <Button
+                          size="sm"
+                          className="h-7 text-[11px]"
+                          onClick={() => openEdit(selectedTask)}
+                        >
+                          Edit selected
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px]"
+                          onClick={() => markDone(selectedTask.id)}
+                        >
+                          Mark done
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[11px] text-red-600"
+                          onClick={() => deleteTask(selectedTask.id)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic">
+                      No task selected yet. Click any dot or task card to show
+                      its details here.
+                    </p>
+                  )}
+                </div>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Task view
+                  </p>
+                  <div className="inline-flex rounded-full border border-slate-200 bg-slate-100 p-1">
+                    {[
+                      { label: "All", value: "all" },
+                      { label: "Active", value: "active" },
+                      { label: "Done", value: "completed" },
+                    ].map((option) => {
+                      const isActive = taskFilter === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() =>
+                            setTaskFilter(option.value as TaskFilter)
+                          }
+                          className={`px-3 py-1 text-[11px] font-semibold rounded-full transition ${
+                            isActive
+                              ? "bg-slate-900 text-white shadow-sm"
+                              : "text-slate-600 hover:text-slate-900"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div className="mb-2 text-[11px] space-y-1">
                   <p className="font-semibold">Max tasks / region</p>
                   <div className="grid grid-cols-4 gap-2">
@@ -1346,21 +1997,41 @@ const Planner: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                {focusedColor && focusColorInfo && (
+                  <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
+                    <span>Showing tasks colored</span>
+                    <span
+                      className="inline-flex h-3 w-6 rounded border border-slate-400"
+                      style={{ backgroundColor: focusedColor }}
+                    />
+                    <span className="font-semibold">
+                      {focusColorInfo.label}
+                    </span>
+                  </div>
+                )}
 
                 <div className="flex-1 border border-slate-200 rounded-lg p-2 overflow-y-auto max-h-[380px]">
                   <div className="space-y-2">
-                    {tasks.length === 0 && (
+                    {displayedTasks.length === 0 && (
                       <p className="text-[11px] text-slate-400">
-                        No tasks yet. Add one on the left to populate the
-                        planner.
+                        {taskFilter === "completed"
+                          ? "No completed tasks yet."
+                          : taskFilter === "active"
+                          ? "All active tasks are done. Add a new one on the left."
+                          : "No tasks yet. Add one on the left to populate the planner."}
                       </p>
                     )}
-                    {tasks
-                      .slice()
-                      .sort((a, b) => a.deadline.localeCompare(b.deadline))
-                      .map((t, idx) => {
+                    {displayedTasks.length > 0 &&
+                      displayedTasks
+                        .slice()
+                        .sort((a, b) => a.deadline.localeCompare(b.deadline))
+                        .map((t, idx) => {
                         const isActive = t.id === activeId;
                         const dl = formatDateMMDDYYYYFromISODate(t.deadline);
+                        const projectColor = resolveProjectColor(
+                          t.project,
+                          t.projectColor
+                        );
 
                         return (
                           <div
@@ -1372,6 +2043,7 @@ const Planner: React.FC = () => {
                                 : "bg-white border-slate-200 hover:bg-slate-50")
                             }
                             onClick={() => setActiveId(t.id)}
+                            ref={registerTaskRef(t.id)}
                           >
                             <div className="flex-1">
                               <div className="flex items-center justify-between mb-1">
@@ -1379,6 +2051,10 @@ const Planner: React.FC = () => {
                                   <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-slate-800 text-[10px] font-semibold text-slate-50">
                                     {idx + 1}
                                   </span>
+                                  <span
+                                    className="h-3 w-3 rounded-full border border-slate-900"
+                                    style={{ backgroundColor: projectColor }}
+                                  />
                                   <span className="font-semibold">
                                     {compactLabel(t)} ({t.remainingDays} d)
                                   </span>
@@ -1388,11 +2064,22 @@ const Planner: React.FC = () => {
                                 </span>
                               </div>
                               {t.project && (
-                                <div className="text-[10px] text-slate-600">
+                                <div className="text-[10px] text-slate-600 flex items-center gap-1 flex-wrap">
                                   <span className="font-semibold">
                                     Project:
-                                  </span>{" "}
-                                  {t.project}
+                                  </span>
+                                  <span>{t.project}</span>
+                                  {t.projectTag && (
+                                    <span className="ml-1 inline-flex items-center rounded-full border border-slate-400 px-1 py-[1px] text-[9px] font-semibold uppercase tracking-wide text-slate-600">
+                                      {t.projectTag}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {!t.project && t.projectTag && (
+                                <div className="text-[10px] text-slate-600">
+                                  <span className="font-semibold">Tag:</span>{" "}
+                                  {t.projectTag}
                                 </div>
                               )}
                               <div className="text-[10px] text-slate-800">
@@ -1456,6 +2143,137 @@ const Planner: React.FC = () => {
               </CardContent>
             </Card>
           </div>
+        </div>
+
+        <div className="mt-6">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Workspace activity</CardTitle>
+              <CardDescription className="text-xs">
+                Key indicators, regional balance, and the latest events.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-xs max-h-[520px] overflow-y-auto pr-2 space-y-4">
+              <div className="flex flex-wrap gap-3 text-[11px]">
+                {[
+                  { label: "Active tasks", value: activeCount },
+                  { label: "Completed", value: completedCount },
+                  { label: "Projects", value: projectCount },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"
+                  >
+                    <span className="font-semibold text-slate-900 text-base leading-none">
+                      {stat.value}
+                    </span>
+                    <span className="text-slate-500">{stat.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-700 mb-2">
+                  Active tasks by region
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[4, 3, 2, 1].map((region) => (
+                    <div
+                      key={region}
+                      className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                    >
+                      <div className="flex flex-col leading-tight">
+                        <span className="text-[11px] font-semibold text-amber-500">
+                          {stars(region as StarRegion)}
+                        </span>
+                        <span className="text-[10px] text-slate-600">
+                          {regionLabel(region as StarRegion)}
+                        </span>
+                      </div>
+                      <span className="text-sm font-semibold text-slate-900">
+                        {activeRegionCounts[region as StarRegion] ?? 0}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold text-slate-700 mb-2">
+                  Upcoming deadlines
+                </p>
+                {dueSoonTasks.length === 0 ? (
+                  <p className="text-[11px] text-slate-400">
+                    Nothing on the horizon. Great job staying ahead!
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {dueSoonTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-[11px] font-semibold text-slate-900">
+                            {task.task}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {task.project || "Untitled project"}
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[11px] font-semibold text-slate-900 block">
+                            {formatDateMMDDYYYYFromISODate(task.deadline)}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {compactLabel(task)} left
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="border border-slate-200 rounded-xl bg-white p-3 space-y-3">
+                <p className="text-[11px] font-semibold text-slate-700">
+                  Projects overview
+                </p>
+                {projectSummaries.length === 0 ? (
+                  <p className="text-[11px] text-slate-400">
+                    Start a project to see breakdowns here.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {projectSummaries.map((project) => (
+                      <div
+                        key={project.key}
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span
+                            className="inline-flex h-4 w-4 rounded-full border border-slate-900"
+                            style={{ backgroundColor: project.color }}
+                          />
+                          <div>
+                            <p className="font-semibold text-slate-900">
+                              {project.label}
+                            </p>
+                            <p className="text-[11px] text-slate-600">
+                              {project.total} tasks &middot;{" "}
+                              {project.active} active
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          {project.active === 0
+                            ? "All done"
+                            : `${project.active} remaining`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* Initial setup dialog */}
@@ -1533,6 +2351,61 @@ const Planner: React.FC = () => {
           </DialogContent>
         </Dialog>
 
+        {/* Color picker dialog */}
+        <Dialog
+          open={colorPickerTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setColorPickerTarget(null);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Select a project color</DialogTitle>
+              <DialogDescription>
+                Click any swatch or enter a custom hex value.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-3 space-y-3 text-sm">
+              <div className="grid grid-cols-5 gap-2">
+                {PROJECT_COLOR_PALETTE.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    onClick={() => applyColorSelection(color)}
+                    className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 px-2 py-2 hover:border-slate-500"
+                  >
+                    <span
+                      className="inline-flex h-8 w-8 rounded-full border border-slate-900"
+                      style={{ backgroundColor: color }}
+                    />
+                    <span className="text-[11px] font-semibold text-slate-800">
+                      {color.toUpperCase()}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={colorPickerValue}
+                  onChange={(e) =>
+                    setColorPickerValue(e.target.value.toUpperCase())
+                  }
+                  placeholder="#3366FF"
+                  className="text-xs font-mono"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => applyColorSelection(colorPickerValue)}
+                  disabled={!sanitizeHexColor(colorPickerValue)}
+                >
+                  Apply
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* Edit task */}
         <Dialog open={editOpen} onOpenChange={setEditOpen}>
           <DialogContent className="max-w-md">
@@ -1568,6 +2441,34 @@ const Planner: React.FC = () => {
                     value={editTask.project}
                     onChange={(e) =>
                       setEditTask({ ...editTask, project: e.target.value })
+                    }
+                    className="h-8 text-xs"
+                  />
+                  <span className="text-xs">Project color</span>
+                  <button
+                    type="button"
+                    onClick={() => openColorPicker("edit")}
+                    className="flex items-center gap-2 rounded-md border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-800 shadow-sm hover:border-slate-500"
+                  >
+                    <span
+                      className="inline-flex h-4 w-4 rounded-full border border-slate-900"
+                      style={{
+                        backgroundColor: resolveProjectColor(
+                          editTask.project,
+                          editTask.projectColor
+                        ),
+                      }}
+                    />
+                    {resolveProjectColor(
+                      editTask.project,
+                      editTask.projectColor
+                    ).toUpperCase()}
+                  </button>
+                  <span className="text-xs">Project tag</span>
+                  <Input
+                    value={editTask.projectTag ?? ""}
+                    onChange={(e) =>
+                      setEditTask({ ...editTask, projectTag: e.target.value })
                     }
                     className="h-8 text-xs"
                   />
@@ -1656,27 +2557,12 @@ const Planner: React.FC = () => {
                 </li>
               </ul>
 
-              <p className="mt-2">Each task is shown as a colored circle:</p>
-              <ul className="list-disc list-inside text-sm space-y-1">
-                <li>
-                  <span className="font-medium text-red-500">Red</span>: days
-                  (1–7 d)
-                </li>
-                <li>
-                  <span className="font-medium text-yellow-600">
-                    Dark yellow
-                  </span>
-                  : weeks (1–4 w)
-                </li>
-                <li>
-                  <span className="font-medium text-emerald-500">Green</span>:
-                  months (1–12 m)
-                </li>
-                <li>
-                  <span className="font-medium text-sky-500">Blue</span>: years
-                  (1–10 y)
-                </li>
-              </ul>
+              <p className="mt-2">
+                Each quadrant now has a soft background tint (rose, amber,
+                green, and sky) to reinforce its urgency range. The actual dot
+                color is entirely up to you—assign a color per project to group
+                related tasks visually across the board.
+              </p>
 
               <p className="mt-2">
                 Inside each dot you see a compact label such as{" "}
