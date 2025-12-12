@@ -1638,7 +1638,7 @@ const Planner: React.FC = () => {
                   cy={cy}
                   r={maxR}
                   fill="#f9fafb"
-                  stroke="#94a3b8"
+                  stroke="#ffffff"
                   strokeWidth={3}
                   strokeDasharray="8 6"
                 />
@@ -1652,16 +1652,18 @@ const Planner: React.FC = () => {
                   y1={cy}
                   x2={cx + maxR}
                   y2={cy}
-                  stroke="#94a3b8"
+                  stroke="#b45309"
                   strokeWidth={2}
+                  strokeDasharray="5 5"
                 />
                 <line
                   x1={cx}
                   y1={cy - maxR}
                   x2={cx}
                   y2={cy + maxR}
-                  stroke="#94a3b8"
+                  stroke="#b45309"
                   strokeWidth={2}
+                  strokeDasharray="5 5"
                 />
 
                 {/* rings */}
@@ -1689,10 +1691,11 @@ const Planner: React.FC = () => {
                       key={idx}
                       x={cx + r + 24}
                       y={cy + 4}
-                      fontSize={11}
-                      fill="#6b7280"
+                      fontSize={12}
+                      fontWeight={700}
+                      fill="#0f172a"
                     >
-                      {perc}% time left
+                      {perc}%
                     </text>
                   );
                 })}
