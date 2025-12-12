@@ -1230,36 +1230,33 @@ const Planner: React.FC = () => {
     const lanes = 10;
     const lines: React.ReactElement[] = [];
 
-    (Object.keys(regionAngles) as Array<keyof typeof regionAngles>).forEach(
-      (key) => {
-        const region = key as StarRegion;
-        const angleRange = regionAngles[region];
-        for (let lane = 0; lane < lanes; lane++) {
-          const angleDeg =
-            angleRange.start +
-            ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
-          const angleRad = (angleDeg * Math.PI) / 180;
-          const x2 = cx + maxR * Math.cos(angleRad);
-          const y2 = cy - maxR * Math.sin(angleRad);
-          const x2r = parseFloat(x2.toFixed(6));
-          const y2r = parseFloat(y2.toFixed(6));
+    (Object.keys(regionAngles) as StarRegion[]).forEach((region) => {
+      const angleRange = regionAngles[region];
+      for (let lane = 0; lane < lanes; lane++) {
+        const angleDeg =
+          angleRange.start +
+          ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
+        const angleRad = (angleDeg * Math.PI) / 180;
+        const x2 = cx + maxR * Math.cos(angleRad);
+        const y2 = cy - maxR * Math.sin(angleRad);
+        const x2r = parseFloat(x2.toFixed(6));
+        const y2r = parseFloat(y2.toFixed(6));
 
-          lines.push(
-            <line
-              key={`${region}-${lane}`}
-              x1={cx}
-              y1={cy}
-              x2={x2r}
-              y2={y2r}
-              stroke="#cbd5f5"
-              strokeWidth={1.4}
-              strokeDasharray="3 4"
-              opacity={0.9}
-            />
-          );
-        }
+        lines.push(
+          <line
+            key={`${region}-${lane}`}
+            x1={cx}
+            y1={cy}
+            x2={x2r}
+            y2={y2r}
+            stroke="#cbd5f5"
+            strokeWidth={1.4}
+            strokeDasharray="3 4"
+            opacity={0.9}
+          />
+        );
       }
-    );
+    });
 
     return lines;
   };
