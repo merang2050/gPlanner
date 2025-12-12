@@ -1228,7 +1228,7 @@ const Planner: React.FC = () => {
   const buildRadialGuides = () => {
     if (!mounted) return null; // avoid SSR float mismatch
     const lanes = 10;
-    const lines: JSX.Element[] = [];
+    const lines: React.ReactElement[] = [];
 
     (Object.keys(regionAngles) as Array<keyof typeof regionAngles>).forEach(
       (key) => {
