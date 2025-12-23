@@ -6,6 +6,13 @@ The app runs entirely in your browser (local Next.js app) and stores data in `lo
 
 ---
 
+![gPlanner](gPlanner.jpeg)
+
+
+---
+
+
+
 ## 1. Concept: How the Geometry Works
 
 The planner circle is split into four regions (quadrants):
