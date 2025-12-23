@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 // ---- Types ----
 
 type StarRegion = 1 | 2 | 3 | 4;
+type AngleRange = { start: number; end: number };
 type TimeBucket = "days" | "weeks" | "months" | "years";
 
 type LayoutMode = "spread" | "track";
@@ -763,12 +764,13 @@ const Planner: React.FC = () => {
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
-  const regionAngles: Record<StarRegion, { start: number; end: number }> = {
+  const regionAngles = {
     4: { start: 180, end: 270 }, // TL
     3: { start: 270, end: 360 }, // TR
     2: { start: 90, end: 180 }, // BL
     1: { start: 0, end: 90 }, // BR
-  };
+  } satisfies Record<StarRegion, AngleRange>;
+  type RegionAngles = typeof regionAngles;
 
   const stepsForBucket: Record<TimeBucket, number> = {
     days: 7,
@@ -938,36 +940,36 @@ const Planner: React.FC = () => {
     const lanes = 10;
     const lines: React.ReactElement[] = [];
 
-    (Object.keys(regionAngles) as Array<keyof typeof regionAngles>).forEach(
-      (key) => {
-        const region = key as StarRegion;
-        const angleRange = regionAngles[region];
-        for (let lane = 0; lane < lanes; lane++) {
-          const angleDeg =
-            angleRange.start +
-            ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
-          const angleRad = (angleDeg * Math.PI) / 180;
-          const x2 = cx + maxR * Math.cos(angleRad);
-          const y2 = cy - maxR * Math.sin(angleRad);
-          const x2r = parseFloat(x2.toFixed(6));
-          const y2r = parseFloat(y2.toFixed(6));
+    Object.entries(regionAngles).forEach(([regionKey, angleRange]) => {
+      const regionNum = Number(regionKey);
+      if (regionNum !== 1 && regionNum !== 2 && regionNum !== 3 && regionNum !== 4) return;
+      const region: StarRegion = regionNum;
 
-          lines.push(
-            <line
-              key={`${region}-${lane}`}
-              x1={cx}
-              y1={cy}
-              x2={x2r}
-              y2={y2r}
-              stroke="#e5e7eb"
-              strokeWidth={1}
-              strokeDasharray="3 5"
-              opacity={0.7}
-            />
-          );
-        }
+      for (let lane = 0; lane < lanes; lane++) {
+        const angleDeg =
+          angleRange.start +
+          ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
+        const angleRad = (angleDeg * Math.PI) / 180;
+        const x2 = cx + maxR * Math.cos(angleRad);
+        const y2 = cy - maxR * Math.sin(angleRad);
+        const x2r = parseFloat(x2.toFixed(6));
+        const y2r = parseFloat(y2.toFixed(6));
+
+        lines.push(
+          <line
+            key={`${region}-${lane}`}
+            x1={cx}
+            y1={cy}
+            x2={x2r}
+            y2={y2r}
+            stroke="#e5e7eb"
+            strokeWidth={1}
+            strokeDasharray="3 5"
+            opacity={0.7}
+          />
+        );
       }
-    );
+    });
 
     return lines;
   };
