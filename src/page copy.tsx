@@ -995,19 +995,18 @@ const Planner: React.FC = () => {
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
-  const regionAngles: Record<StarRegion, AngleRange> = {
+  const regionAngles = {
     4: { start: 90, end: 180 }, // TL – Important/Urgent (days)
     3: { start: 0, end: 90 }, // TR – Important/Not Urgent (weeks)
     2: { start: 180, end: 270 }, // BL – Not important/Urgent (months)
     1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
-  };
+  } satisfies Record<StarRegion, AngleRange>;
   type RegionAngles = typeof regionAngles;
-  const regionAngleEntries: [StarRegion, RegionAngles[StarRegion]][] = (
-    Object.entries(regionAngles) as [string, RegionAngles[StarRegion]][]
-  ).map(([region, angleRange]) => [
-    Number(region) as StarRegion,
-    angleRange,
-  ]);
+  const toStarRegion = (value: string | number): StarRegion | null => {
+    const num = Number(value);
+    if (num === 1 || num === 2 || num === 3 || num === 4) return num;
+    return null;
+  };
   const regionBackgroundFills: Record<StarRegion, string> = {
     4: "#fee2e2",
     3: "#fef3c7",
@@ -1235,7 +1234,10 @@ const Planner: React.FC = () => {
     const lanes = 10;
     const lines: React.ReactElement[] = [];
 
-    regionAngleEntries.forEach(([region, angleRange]) => {
+    Object.entries(regionAngles).forEach(([regionKey, angleRange]) => {
+      const region = toStarRegion(regionKey);
+      if (!region) return;
+
       for (let lane = 0; lane < lanes; lane++) {
         const angleDeg =
           angleRange.start +
@@ -1267,7 +1269,10 @@ const Planner: React.FC = () => {
 
   const renderRegionBackgrounds = () => {
     const wedges: React.ReactElement[] = [];
-    regionAngleEntries.forEach(([region, { start, end }]) => {
+    Object.entries(regionAngles).forEach(([regionKey, { start, end }]) => {
+      const region = toStarRegion(regionKey);
+      if (!region) return;
+
       const startRad = (start * Math.PI) / 180;
       const endRad = (end * Math.PI) / 180;
       const x1 = cx + maxR * Math.cos(startRad);
