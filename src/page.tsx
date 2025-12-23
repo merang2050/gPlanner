@@ -154,6 +154,39 @@ function formatDateMMDDYYYYFromISODateTime(iso: string): string {
   return `${m}/${day}/${y}`;
 }
 
+function normalizeDateInput(value?: string): string | null {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+
+  const simpleMatch = trimmed.match(
+    /^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})$/
+  );
+  if (simpleMatch) {
+    let month = parseInt(simpleMatch[1], 10);
+    let day = parseInt(simpleMatch[2], 10);
+    let year = parseInt(simpleMatch[3], 10);
+    if (year < 100) year += 2000;
+    if (month > 12 && day <= 12) {
+      [month, day] = [day, month];
+    }
+    const candidate = new Date(year, month - 1, day);
+    if (
+      candidate.getFullYear() === year &&
+      candidate.getMonth() === month - 1 &&
+      candidate.getDate() === day
+    ) {
+      return formatDateYYYYMMDD(candidate);
+    }
+  }
+
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime())) {
+    return formatDateYYYYMMDD(parsed);
+  }
+  return null;
+}
+
 function bucketFromDays(
   days: number
 ): { region: StarRegion; bucket: TimeBucket } | null {
@@ -327,6 +360,7 @@ function parseCSV(text: string): Task[] {
   const idxFinished = idx("finishedAt");
 
   const tasks: Task[] = [];
+  const today = todayISO();
 
   for (let i = 1; i < lines.length; i++) {
     const raw = lines[i];
@@ -335,18 +369,45 @@ function parseCSV(text: string): Task[] {
     if (cols.length < header.length) continue;
 
     const id = cols[idxId] || `csv-${i}`;
-    const date = cols[idxDate] || todayISO();
-    const deadline = cols[idxDeadline] || date;
-    const region = (parseInt(cols[idxRegion] || "4", 10) as StarRegion) || 4;
-    const bucket = (cols[idxBucket] as TimeBucket) || "days";
-    const remainingDays = parseInt(cols[idxRemaining] || "1", 10);
-    const project = cols[idxProject] || "";
-    const projectTag = (idxProjectTag >= 0 ? cols[idxProjectTag] : "") || "";
+    const rawDate = idxDate >= 0 ? cols[idxDate] : "";
+    const rawDeadline = idxDeadline >= 0 ? cols[idxDeadline] : "";
+    const date = normalizeDateInput(rawDate) ?? today;
+    const deadline = normalizeDateInput(rawDeadline) ?? date;
+
+    const candidateRemaining = diffInDays(today, deadline);
+    const recomputed = bucketFromDays(candidateRemaining);
+
+    const rawRegion = idxRegion >= 0 ? cols[idxRegion] : "";
+    const parsedRegion = parseInt(rawRegion || "", 10);
+    const region =
+      recomputed?.region ??
+      ([1, 2, 3, 4].includes(parsedRegion) ? (parsedRegion as StarRegion) : 4);
+
+    const rawBucket = (idxBucket >= 0 ? cols[idxBucket] : "") || "";
+    const bucket: TimeBucket =
+      recomputed?.bucket ??
+      (["days", "weeks", "months", "years"].includes(rawBucket)
+        ? (rawBucket as TimeBucket)
+        : "days");
+
+    const remainingDays = recomputed
+      ? Math.max(1, candidateRemaining)
+      : Math.max(
+          1,
+          parseInt(
+            idxRemaining >= 0 ? cols[idxRemaining] || "1" : "1",
+            10
+          )
+        );
+    const project = idxProject >= 0 ? cols[idxProject] || "" : "";
+    const projectTag =
+      (idxProjectTag >= 0 ? cols[idxProjectTag] : "") || "";
     const projectColor =
       (idxProjectColor >= 0 ? cols[idxProjectColor] : "") || "";
-    const task = cols[idxTask] || "";
-    const createdAt = cols[idxCreated] || new Date().toISOString();
-    const finishedAt = cols[idxFinished] || undefined;
+    const task = idxTask >= 0 ? cols[idxTask] || "" : "";
+    const createdAt =
+      idxCreated >= 0 ? cols[idxCreated] || new Date().toISOString() : new Date().toISOString();
+    const finishedAt = idxFinished >= 0 ? cols[idxFinished] || undefined : undefined;
 
     tasks.push({
       id,
@@ -995,18 +1056,19 @@ const Planner: React.FC = () => {
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
-  const regionAngles = {
+  const regionAngles: Record<StarRegion, AngleRange> = {
     4: { start: 90, end: 180 }, // TL – Important/Urgent (days)
     3: { start: 0, end: 90 }, // TR – Important/Not Urgent (weeks)
     2: { start: 180, end: 270 }, // BL – Not important/Urgent (months)
     1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
-  } satisfies Record<StarRegion, AngleRange>;
-  type RegionAngles = typeof regionAngles;
-  const toStarRegion = (value: string | number): StarRegion | null => {
-    const num = Number(value);
-    if (num === 1 || num === 2 || num === 3 || num === 4) return num;
-    return null;
   };
+  type RegionAngles = typeof regionAngles;
+  const regionAngleEntries: [StarRegion, RegionAngles[StarRegion]][] = (
+    Object.entries(regionAngles) as [string, RegionAngles[StarRegion]][]
+  ).map(([region, angleRange]) => [
+    Number(region) as StarRegion,
+    angleRange,
+  ]);
   const regionBackgroundFills: Record<StarRegion, string> = {
     4: "#fee2e2",
     3: "#fef3c7",
@@ -1234,10 +1296,7 @@ const Planner: React.FC = () => {
     const lanes = 10;
     const lines: React.ReactElement[] = [];
 
-    Object.entries(regionAngles).forEach(([regionKey, angleRange]) => {
-      const region = toStarRegion(regionKey);
-      if (!region) return;
-
+    regionAngleEntries.forEach(([region, angleRange]) => {
       for (let lane = 0; lane < lanes; lane++) {
         const angleDeg =
           angleRange.start +
@@ -1269,10 +1328,7 @@ const Planner: React.FC = () => {
 
   const renderRegionBackgrounds = () => {
     const wedges: React.ReactElement[] = [];
-    Object.entries(regionAngles).forEach(([regionKey, { start, end }]) => {
-      const region = toStarRegion(regionKey);
-      if (!region) return;
-
+    regionAngleEntries.forEach(([region, { start, end }]) => {
       const startRad = (start * Math.PI) / 180;
       const endRad = (end * Math.PI) / 180;
       const x1 = cx + maxR * Math.cos(startRad);

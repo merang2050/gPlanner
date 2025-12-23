@@ -1,12 +1,8 @@
 "use client";
 
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  PointerEvent,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
+import type * as React from "react";
 import { Download, Trash2, Pencil, Share2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -308,9 +304,13 @@ function splitCSVLine(line: string, expectedCols: number): string[] {
 }
 
 function parseCSV(text: string): Task[] {
+  // Supports BOTH:
+  // 1) "v1" CSVs exported by this app (region/bucket/remainingDays/createdAt...)
+  // 2) Legacy CSVs (date/deadline/stars/timeScale/posAngle_deg/posRadius_fraction/finishDate...)
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return [];
-  const header = lines[0].split(",");
+
+  const header = lines[0].split(",").map((h) => h.trim());
   const idx = (name: string) => header.indexOf(name);
 
   const idxId = idx("id");
@@ -320,45 +320,195 @@ function parseCSV(text: string): Task[] {
   const idxProjectTag = idx("projectTag");
   const idxProjectColor = idx("projectColor");
   const idxTask = idx("task");
+
+  // v1/new format
   const idxRegion = idx("region");
   const idxBucket = idx("bucket");
   const idxRemaining = idx("remainingDays");
   const idxCreated = idx("createdAt");
   const idxFinished = idx("finishedAt");
 
+  // legacy fields
+  const idxStars = idx("stars");
+  const idxFinishDate = idx("finishDate"); // legacy
+  const idxTimeScale = idx("timeScale");
+  const idxQuadrant = idx("quadrant");
+
   const tasks: Task[] = [];
+
+  const hasNewPlacement =
+    idxRegion >= 0 && idxBucket >= 0 && idxRemaining >= 0 && idxCreated >= 0;
+
+  const parseISODate = (iso: string): Date | null => {
+    // Expect yyyy-MM-dd
+    if (!iso) return null;
+    const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d))
+      return null;
+    const dt = new Date(y, mo - 1, d);
+    if (
+      dt.getFullYear() !== y ||
+      dt.getMonth() !== mo - 1 ||
+      dt.getDate() !== d
+    )
+      return null;
+    return dt;
+  };
+
+  const diffDaysCeil = (fromISO: string, toISO: string): number | null => {
+    const from = parseISODate(fromISO);
+    const to = parseISODate(toISO);
+    if (!from || !to) return null;
+    const ms = to.getTime() - from.getTime();
+    const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+    return Number.isFinite(days) ? days : null;
+  };
+
+  const coerceBucket = (v: string): TimeBucket => {
+    const s = (v || "").trim().toLowerCase();
+    if (s === "days" || s === "weeks" || s === "months" || s === "years")
+      return s;
+    if (s === "day") return "days";
+    if (s === "week") return "weeks";
+    if (s === "month") return "months";
+    if (s === "year") return "years";
+    return "days";
+  };
+
+  // For legacy imports, placement should reflect the CURRENT day.
+  const nowISO = (() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  })();
+
+  const normalizeDateInput = (value: string): string | null => {
+    const trimmed = (value || "").trim();
+    if (!trimmed) return null;
+    // Accept yyyy-MM-dd or yyyy-MM-ddTHH:mm:ss
+    const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return formatDateYYYYMMDD(parsed);
+  };
+
+  const normalizeOrFallback = (value: string, fallback: string): string =>
+    normalizeDateInput(value) ?? fallback;
+
+  const placementFromDeadline = (deadlineISO: string) => {
+    const days = diffDaysCeil(nowISO, deadlineISO);
+    if (days === null) return null;
+    const clampedDays = Math.max(1, days);
+    const placement =
+      bucketFromDays(clampedDays) ||
+      ({ region: 4, bucket: "days" } as const);
+    return { remainingDays: clampedDays, ...placement };
+  };
 
   for (let i = 1; i < lines.length; i++) {
     const raw = lines[i];
     if (!raw.trim()) continue;
+
     const cols = splitCSVLine(raw, header.length);
     if (cols.length < header.length) continue;
 
-    const id = cols[idxId] || `csv-${i}`;
-    const date = cols[idxDate] || todayISO();
-    const deadline = cols[idxDeadline] || date;
-    const region = (parseInt(cols[idxRegion] || "4", 10) as StarRegion) || 4;
-    const bucket = (cols[idxBucket] as TimeBucket) || "days";
-    const remainingDays = parseInt(cols[idxRemaining] || "1", 10);
-    const project = cols[idxProject] || "";
+    const id = (idxId >= 0 ? cols[idxId] : "") || `csv-${i}`;
+    const rawDate = idxDate >= 0 ? cols[idxDate] : "";
+    const rawDeadline = idxDeadline >= 0 ? cols[idxDeadline] : "";
+    const date = normalizeOrFallback(rawDate, nowISO);
+    const deadline = normalizeOrFallback(rawDeadline, date);
+    const deadlinePlacement = placementFromDeadline(deadline);
+
+    const project = (idxProject >= 0 ? cols[idxProject] : "") || "";
     const projectTag = (idxProjectTag >= 0 ? cols[idxProjectTag] : "") || "";
     const projectColor =
       (idxProjectColor >= 0 ? cols[idxProjectColor] : "") || "";
-    const task = cols[idxTask] || "";
-    const createdAt = cols[idxCreated] || new Date().toISOString();
-    const finishedAt = cols[idxFinished] || undefined;
+    const task = (idxTask >= 0 ? cols[idxTask] : "") || "";
+
+    const finishedAtRaw =
+      (idxFinished >= 0 ? cols[idxFinished] : "") ||
+      (idxFinishDate >= 0 ? cols[idxFinishDate] : "");
+    const finishedAt = finishedAtRaw ? finishedAtRaw : undefined;
+
+    const createdAt =
+      (idxCreated >= 0 ? cols[idxCreated] : "") || new Date().toISOString();
+
+    if (hasNewPlacement) {
+      const region =
+        deadlinePlacement?.region ||
+        (parseInt(cols[idxRegion] || "4", 10) as StarRegion) ||
+        4;
+      const bucket =
+        deadlinePlacement?.bucket || coerceBucket(cols[idxBucket] || "days");
+      const remainingDays =
+        deadlinePlacement?.remainingDays ||
+        Math.max(1, parseInt(cols[idxRemaining] || "1", 10));
+
+      tasks.push({
+        id,
+        date,
+        deadline,
+        project,
+        projectTag,
+        projectColor,
+        task,
+        region,
+        bucket,
+        remainingDays,
+        createdAt,
+        finishedAt,
+      });
+      continue;
+    }
+
+    // Legacy CSV path:
+    // Compute remainingDays using CURRENT day (nowISO) so tasks land in the correct time-horizon region.
+    let remainingDays =
+      deadlinePlacement?.remainingDays ?? diffDaysCeil(nowISO, deadline);
+
+    // If deadline parsing fails, try using saved 'date' -> deadline delta.
+    if (remainingDays === null) remainingDays = diffDaysCeil(date, deadline);
+
+    // If still null, fall back to timeScale/quadrant textual buckets.
+    if (remainingDays === null) {
+      const ts =
+        (idxTimeScale >= 0 ? cols[idxTimeScale] : "").trim().toLowerCase();
+      const q =
+        (idxQuadrant >= 0 ? cols[idxQuadrant] : "").trim().toLowerCase();
+
+      if (ts === "day" || q.includes("1–7") || q.includes("1-7")) remainingDays = 3;
+      else if (ts === "week" || q.includes("1–4") || q.includes("1-4")) remainingDays = 14;
+      else if (ts === "month" || q.includes("1–12") || q.includes("1-12")) remainingDays = 90;
+      else if (ts === "year" || q.includes("1–10") || q.includes("1-10")) remainingDays = 730;
+      else remainingDays = 3;
+    }
+
+    remainingDays = remainingDays ?? 1;
+
+    // Clamp: overdue or zero goes to most urgent bucket
+    if (remainingDays <= 0) remainingDays = 1;
+
+    const placement =
+      bucketFromDays(remainingDays) || ({ region: 4, bucket: "days" } as const);
 
     tasks.push({
       id,
       date,
       deadline,
-      region,
-      bucket,
-      remainingDays,
       project,
       projectTag,
       projectColor,
       task,
+      region: placement.region,
+      bucket: placement.bucket,
+      remainingDays,
       createdAt,
       finishedAt,
     });
@@ -1001,13 +1151,6 @@ const Planner: React.FC = () => {
     2: { start: 180, end: 270 }, // BL – Not important/Urgent (months)
     1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
   };
-  type RegionAngles = typeof regionAngles;
-  const regionAngleEntries: [StarRegion, RegionAngles[StarRegion]][] = (
-    Object.entries(regionAngles) as [string, RegionAngles[StarRegion]][]
-  ).map(([region, angleRange]) => [
-    Number(region) as StarRegion,
-    angleRange,
-  ]);
   const regionBackgroundFills: Record<StarRegion, string> = {
     4: "#fee2e2",
     3: "#fef3c7",
@@ -1235,7 +1378,8 @@ const Planner: React.FC = () => {
     const lanes = 10;
     const lines: React.ReactElement[] = [];
 
-    regionAngleEntries.forEach(([region, angleRange]) => {
+    Object.entries(regionAngles).forEach(([regionKey, angleRange]) => {
+      const region = Number(regionKey) as StarRegion;
       for (let lane = 0; lane < lanes; lane++) {
         const angleDeg =
           angleRange.start +
@@ -1267,7 +1411,8 @@ const Planner: React.FC = () => {
 
   const renderRegionBackgrounds = () => {
     const wedges: React.ReactElement[] = [];
-    regionAngleEntries.forEach(([region, { start, end }]) => {
+    Object.entries(regionAngles).forEach(([regionKey, { start, end }]) => {
+      const region = Number(regionKey) as StarRegion;
       const startRad = (start * Math.PI) / 180;
       const endRad = (end * Math.PI) / 180;
       const x1 = cx + maxR * Math.cos(startRad);
