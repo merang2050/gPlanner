@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 // ---- Types ----
 
 type StarRegion = 1 | 2 | 3 | 4;
+type AngleRange = { start: number; end: number };
 type TimeBucket = "days" | "weeks" | "months" | "years";
 type TaskFilter = "all" | "active" | "completed";
 
@@ -994,12 +995,13 @@ const Planner: React.FC = () => {
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
-  const regionAngles: Record<StarRegion, { start: number; end: number }> = {
+  const regionAngles: Record<StarRegion, AngleRange> = {
     4: { start: 90, end: 180 }, // TL – Important/Urgent (days)
     3: { start: 0, end: 90 }, // TR – Important/Not Urgent (weeks)
     2: { start: 180, end: 270 }, // BL – Not important/Urgent (months)
     1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
   };
+  type RegionAngles = typeof regionAngles;
   const regionBackgroundFills: Record<StarRegion, string> = {
     4: "#fee2e2",
     3: "#fef3c7",
@@ -1227,70 +1229,72 @@ const Planner: React.FC = () => {
     const lanes = 10;
     const lines: JSX.Element[] = [];
 
-    (Object.keys(regionAngles) as Array<keyof typeof regionAngles>).forEach(
-      (key) => {
-        const region = key as StarRegion;
-        const angleRange = regionAngles[region];
-        for (let lane = 0; lane < lanes; lane++) {
-          const angleDeg =
-            angleRange.start +
-            ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
-          const angleRad = (angleDeg * Math.PI) / 180;
-          const x2 = cx + maxR * Math.cos(angleRad);
-          const y2 = cy - maxR * Math.sin(angleRad);
-          const x2r = parseFloat(x2.toFixed(6));
-          const y2r = parseFloat(y2.toFixed(6));
+    (
+      Object.entries(regionAngles) as [
+        StarRegion,
+        RegionAngles[StarRegion]
+      ][]
+    ).forEach(([region, angleRange]) => {
+      for (let lane = 0; lane < lanes; lane++) {
+        const angleDeg =
+          angleRange.start +
+          ((angleRange.end - angleRange.start) * (lane + 0.5)) / lanes;
+        const angleRad = (angleDeg * Math.PI) / 180;
+        const x2 = cx + maxR * Math.cos(angleRad);
+        const y2 = cy - maxR * Math.sin(angleRad);
+        const x2r = parseFloat(x2.toFixed(6));
+        const y2r = parseFloat(y2.toFixed(6));
 
-          lines.push(
-            <line
-              key={`${region}-${lane}`}
-              x1={cx}
-              y1={cy}
-              x2={x2r}
-              y2={y2r}
-              stroke="#cbd5f5"
-              strokeWidth={1.4}
-              strokeDasharray="3 4"
-              opacity={0.9}
-            />
-          );
-        }
+        lines.push(
+          <line
+            key={`${region}-${lane}`}
+            x1={cx}
+            y1={cy}
+            x2={x2r}
+            y2={y2r}
+            stroke="#cbd5f5"
+            strokeWidth={1.4}
+            strokeDasharray="3 4"
+            opacity={0.9}
+          />
+        );
       }
-    );
+    });
 
     return lines;
   };
 
   const renderRegionBackgrounds = () => {
     const wedges: JSX.Element[] = [];
-    (Object.keys(regionAngles) as Array<keyof typeof regionAngles>).forEach(
-      (key) => {
-        const region = key as StarRegion;
-        const { start, end } = regionAngles[region];
-        const startRad = (start * Math.PI) / 180;
-        const endRad = (end * Math.PI) / 180;
-        const x1 = cx + maxR * Math.cos(startRad);
-        const y1 = cy - maxR * Math.sin(startRad);
-        const x2 = cx + maxR * Math.cos(endRad);
-        const y2 = cy - maxR * Math.sin(endRad);
-        const largeArc = Math.abs(end - start) > 180 ? 1 : 0;
-        const pathD = [
-          `M ${cx} ${cy}`,
-          `L ${x1} ${y1}`,
-          `A ${maxR} ${maxR} 0 ${largeArc} 0 ${x2} ${y2}`,
-          "Z",
-        ].join(" ");
-        wedges.push(
-          <path
-            key={`region-bg-${region}`}
-            d={pathD}
-            fill={regionBackgroundFills[region]}
-            opacity={0.5}
-            stroke="none"
-          />
-        );
-      }
-    );
+    (
+      Object.entries(regionAngles) as [
+        StarRegion,
+        RegionAngles[StarRegion]
+      ][]
+    ).forEach(([region, { start, end }]) => {
+      const startRad = (start * Math.PI) / 180;
+      const endRad = (end * Math.PI) / 180;
+      const x1 = cx + maxR * Math.cos(startRad);
+      const y1 = cy - maxR * Math.sin(startRad);
+      const x2 = cx + maxR * Math.cos(endRad);
+      const y2 = cy - maxR * Math.sin(endRad);
+      const largeArc = Math.abs(end - start) > 180 ? 1 : 0;
+      const pathD = [
+        `M ${cx} ${cy}`,
+        `L ${x1} ${y1}`,
+        `A ${maxR} ${maxR} 0 ${largeArc} 0 ${x2} ${y2}`,
+        "Z",
+      ].join(" ");
+      wedges.push(
+        <path
+          key={`region-bg-${region}`}
+          d={pathD}
+          fill={regionBackgroundFills[region]}
+          opacity={0.5}
+          stroke="none"
+        />
+      );
+    });
     return wedges;
   };
 
