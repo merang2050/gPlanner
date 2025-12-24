@@ -1,12 +1,8 @@
 "use client";
 
-import React, {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  PointerEvent,
-} from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
+import type * as React from "react";
 import { Download, Trash2, Pencil, Share2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -308,57 +304,186 @@ function splitCSVLine(line: string, expectedCols: number): string[] {
 }
 
 function parseCSV(text: string): Task[] {
+  // Robust CSV import that fixes the "all deadlines become today" bug.
+  //
+  // Key behaviors:
+  // 1) Header names are case-insensitive and whitespace-tolerant (e.g., "Deadline", "deadline ", "due date").
+  // 2) Date parsing accepts ISO (YYYY-MM-DD) and common Excel exports (MM/DD/YYYY).
+  // 3) We recompute region/bucket/remainingDays from the imported DEADLINE relative to *today*,
+  //    so old CSVs still map correctly and editing a task shows the right deadline.
+
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return [];
-  const header = lines[0].split(",");
-  const idx = (name: string) => header.indexOf(name);
 
-  const idxId = idx("id");
-  const idxDate = idx("date");
-  const idxDeadline = idx("deadline");
-  const idxProject = idx("project");
-  const idxProjectTag = idx("projectTag");
-  const idxProjectColor = idx("projectColor");
-  const idxTask = idx("task");
-  const idxRegion = idx("region");
-  const idxBucket = idx("bucket");
-  const idxRemaining = idx("remainingDays");
-  const idxCreated = idx("createdAt");
-  const idxFinished = idx("finishedAt");
+  const splitCSVLine = (line: string): string[] => {
+    const out: string[] = [];
+    let cur = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === "," && !inQuotes) {
+        out.push(cur);
+        cur = "";
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur);
+    return out.map((v) => v.trim());
+  };
+
+  const rawHeaders = splitCSVLine(lines[0]);
+  const headers = rawHeaders.map((h) =>
+    h.replace(/^\uFEFF/, "").trim().toLowerCase()
+  );
+
+  const idx = (...names: string[]): number => {
+    for (const n of names) {
+      const j = headers.indexOf(n.toLowerCase());
+      if (j !== -1) return j;
+    }
+    return -1;
+  };
+
+  const get = (row: string[], i: number): string => {
+    if (i < 0 || i >= row.length) return "";
+    return (row[i] ?? "").trim().replace(/^"|"$/g, "");
+  };
+
+  const parseDateFlexible = (value: string): Date | null => {
+    const v = (value ?? "").trim().replace(/^"|"$/g, "");
+    if (!v) return null;
+
+    // ISO-ish: YYYY-MM-DD or YYYY/MM/DD
+    const iso = v.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+    if (iso) {
+      const y = Number(iso[1]);
+      const m = Number(iso[2]);
+      const d = Number(iso[3]);
+      const dt = new Date(y, m - 1, d);
+      if (!Number.isNaN(dt.getTime())) return dt;
+    }
+
+    // Excel / US style: M/D/YYYY or MM/DD/YYYY (also supports '-')
+    const us = v.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+    if (us) {
+      const m = Number(us[1]);
+      const d = Number(us[2]);
+      const y = Number(us[3]);
+      const dt = new Date(y, m - 1, d);
+      if (!Number.isNaN(dt.getTime())) return dt;
+    }
+
+    // Excel serial number (days since 1899-12-30)
+    if (/^\d+(\.\d+)?$/.test(v)) {
+      const n = Number(v);
+      if (!Number.isNaN(n) && n > 20000 && n < 80000) {
+        const epoch = new Date(Date.UTC(1899, 11, 30));
+        const dt = new Date(epoch.getTime() + n * 24 * 60 * 60 * 1000);
+        if (!Number.isNaN(dt.getTime())) return dt;
+      }
+    }
+
+    // Fallback: JS parser for full ISO timestamps
+    const dt = new Date(v);
+    if (!Number.isNaN(dt.getTime())) return dt;
+
+    return null;
+  };
+
+  const normalizeToISO = (value: string, fallbackISO: string): string => {
+    const dt = parseDateFlexible(value);
+    return dt ? formatDateYYYYMMDD(dt) : fallbackISO;
+  };
+
+  const parseISODate = (iso: string): Date | null => {
+    if (!iso) return null;
+    const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    const dt = new Date(y, mo - 1, d);
+    if (Number.isNaN(dt.getTime())) return null;
+    return dt;
+  };
+
+  const diffDaysCeil = (fromISO: string, toISO: string): number => {
+    const from = parseISODate(fromISO);
+    const to = parseISODate(toISO);
+    if (!from || !to) return 0;
+    const msPerDay = 24 * 60 * 60 * 1000;
+    return Math.ceil((to.getTime() - from.getTime()) / msPerDay);
+  };
+
+  const iId = idx("id");
+  const iDate = idx("date", "today");
+  const iDeadline = idx("deadline", "due", "due_date", "due date");
+  const iProject = idx("project");
+  const iProjectTag = idx("projecttag", "project_tag", "project tag", "tag");
+  const iProjectColor = idx("projectcolor", "project_color", "project color", "color");
+  const iTask = idx("task", "title", "description");
+  const iCreatedAt = idx("createdat", "created_at", "created at");
+  const iFinishedAt = idx("finishedat", "finished_at", "finished at", "finishdate", "finish_date");
+
+  const today = todayISO();
+  const nowISO = new Date().toISOString();
 
   const tasks: Task[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const raw = lines[i];
-    if (!raw.trim()) continue;
-    const cols = splitCSVLine(raw, header.length);
-    if (cols.length < header.length) continue;
+  for (let r = 1; r < lines.length; r++) {
+    const row = splitCSVLine(lines[r]);
+    if (row.length === 0) continue;
 
-    const id = cols[idxId] || `csv-${i}`;
-    const date = cols[idxDate] || todayISO();
-    const deadline = cols[idxDeadline] || date;
-    const region = (parseInt(cols[idxRegion] || "4", 10) as StarRegion) || 4;
-    const bucket = (cols[idxBucket] as TimeBucket) || "days";
-    const remainingDays = parseInt(cols[idxRemaining] || "1", 10);
-    const project = cols[idxProject] || "";
-    const projectTag = (idxProjectTag >= 0 ? cols[idxProjectTag] : "") || "";
-    const projectColor =
-      (idxProjectColor >= 0 ? cols[idxProjectColor] : "") || "";
-    const task = cols[idxTask] || "";
-    const createdAt = cols[idxCreated] || new Date().toISOString();
-    const finishedAt = cols[idxFinished] || undefined;
+    const dateISO = normalizeToISO(get(row, iDate), today);
+    const deadlineISO = normalizeToISO(get(row, iDeadline), dateISO);
+
+    // Recompute placement from DEADLINE relative to today
+    let remainingDays = diffDaysCeil(today, deadlineISO);
+    if (!Number.isFinite(remainingDays)) remainingDays = 0;
+    remainingDays = Math.max(0, remainingDays);
+
+    const placement = bucketFromDays(Math.max(1, remainingDays)) ?? { region: 1 as StarRegion, bucket: "years" as TimeBucket };
+    const region = placement.region;
+    const bucket = placement.bucket;
+
+    const id = get(row, iId) || `csv-${Date.now()}-${r}`;
+    const project = get(row, iProject) || "Untitled Project";
+    const projectTag = get(row, iProjectTag) || undefined;
+    const projectColor = get(row, iProjectColor) || undefined;
+    const task = get(row, iTask) || "";
+
+    const createdAtRaw = get(row, iCreatedAt);
+    const createdAt =
+      createdAtRaw && !Number.isNaN(new Date(createdAtRaw).getTime())
+        ? new Date(createdAtRaw).toISOString()
+        : nowISO;
+
+    const finishedAtRaw = get(row, iFinishedAt);
+    const finishedAt =
+      finishedAtRaw && !Number.isNaN(new Date(finishedAtRaw).getTime())
+        ? new Date(finishedAtRaw).toISOString()
+        : undefined;
 
     tasks.push({
       id,
-      date,
-      deadline,
-      region,
-      bucket,
-      remainingDays,
+      date: dateISO,
+      deadline: deadlineISO,
       project,
       projectTag,
       projectColor,
       task,
+      region,
+      bucket,
+      remainingDays,
       createdAt,
       finishedAt,
     });
@@ -995,17 +1120,11 @@ const Planner: React.FC = () => {
 
   const { size, cx, cy, maxR, ringRadii } = geometry;
 
-  const regionAngles = {
+  const regionAngles: Record<StarRegion, AngleRange> = {
     4: { start: 90, end: 180 }, // TL – Important/Urgent (days)
     3: { start: 0, end: 90 }, // TR – Important/Not Urgent (weeks)
     2: { start: 180, end: 270 }, // BL – Not important/Urgent (months)
     1: { start: 270, end: 360 }, // BR – Not important/Not urgent (years)
-  } satisfies Record<StarRegion, AngleRange>;
-  type RegionAngles = typeof regionAngles;
-  const toStarRegion = (value: string | number): StarRegion | null => {
-    const num = Number(value);
-    if (num === 1 || num === 2 || num === 3 || num === 4) return num;
-    return null;
   };
   const regionBackgroundFills: Record<StarRegion, string> = {
     4: "#fee2e2",
@@ -1235,9 +1354,7 @@ const Planner: React.FC = () => {
     const lines: React.ReactElement[] = [];
 
     Object.entries(regionAngles).forEach(([regionKey, angleRange]) => {
-      const region = toStarRegion(regionKey);
-      if (!region) return;
-
+      const region = Number(regionKey) as StarRegion;
       for (let lane = 0; lane < lanes; lane++) {
         const angleDeg =
           angleRange.start +
@@ -1270,9 +1387,7 @@ const Planner: React.FC = () => {
   const renderRegionBackgrounds = () => {
     const wedges: React.ReactElement[] = [];
     Object.entries(regionAngles).forEach(([regionKey, { start, end }]) => {
-      const region = toStarRegion(regionKey);
-      if (!region) return;
-
+      const region = Number(regionKey) as StarRegion;
       const startRad = (start * Math.PI) / 180;
       const endRad = (end * Math.PI) / 180;
       const x1 = cx + maxR * Math.cos(startRad);
