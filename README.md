@@ -92,5 +92,5 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ## Run gPlanner App (Vercel)
 
-https://g-planner-eight.vercel.app/
+https://g-planner-hazel.vercel.app/
 
