@@ -1685,23 +1685,6 @@ const Planner: React.FC = () => {
   // ---- Render ----
   const showDotTags = plottedTasks.length <= 18;
 
-  const urgentImportantCount = useMemo(
-    () =>
-      tasksWithMeta.filter((task) => task.region === 4 && !task.finishedAt)
-        .length,
-    [tasksWithMeta]
-  );
-
-  const statTone = (stat: {
-    intent?: "danger" | "warn" | "neutral";
-    highlight?: boolean;
-  }) => {
-    if (stat.intent === "danger") return "border-red-200 bg-rose-50";
-    if (stat.intent === "warn") return "border-amber-200 bg-amber-50";
-    if (stat.highlight) return "border-slate-300 bg-white";
-    return "border-slate-200 bg-white";
-  };
-
   const statCards = [
     {
       label: "Overdue",
@@ -1710,15 +1693,17 @@ const Planner: React.FC = () => {
       intent: "danger",
     },
     {
-      label: "Urgent & important",
-      value: urgentImportantCount,
+      label: "Urgent / Important",
+      value: tasksWithMeta.filter(
+        (task) => task.region === 4 && !task.finishedAt
+      ).length,
       highlight: true,
       intent: "neutral",
     },
     { label: "Active", value: activeCount, intent: "neutral" },
     { label: "Completed", value: completedCount, intent: "neutral" },
     { label: "Projects", value: projectCount, intent: "neutral" },
-    { label: "Total", value: totalTasks, intent: "neutral" },
+    { label: "Total tasks", value: totalTasks, intent: "neutral" },
   ];
 
   return (
@@ -1747,12 +1732,18 @@ const Planner: React.FC = () => {
         </div>
         <div className="grid grid-flow-col auto-cols-[minmax(150px,1fr)] gap-3 overflow-x-auto pb-2 mb-4 text-center">
           {statCards.map((stat) => {
+            const tone =
+              stat.intent === "danger"
+                ? "border-red-200 bg-rose-50"
+                : stat.intent === "warn"
+                ? "border-amber-200 bg-amber-50"
+                : stat.highlight
+                ? "border-slate-300 bg-white"
+                : "border-slate-200 bg-white";
             return (
               <div
                 key={stat.label}
-                className={`rounded-2xl border px-3 py-2.5 shadow-sm ${statTone(
-                  stat
-                )}`}
+                className={`rounded-2xl border px-3 py-2.5 shadow-sm ${tone}`}
               >
                 <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">
                   {stat.label}
@@ -1776,8 +1767,7 @@ const Planner: React.FC = () => {
                 </p>
                 <p className="text-[11px] text-slate-600">
                   {nextPriorityTask.deadlineStatus} &middot;{" "}
-                  {stars(nextPriorityTask.region)}{" "}
-                  {regionLabel(nextPriorityTask.region)}
+                  {stars(nextPriorityTask.region)} {regionLabel(nextPriorityTask.region)}
                 </p>
               </div>
             </div>
