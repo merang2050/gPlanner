@@ -942,8 +942,6 @@ const Planner: React.FC = () => {
     return { activeCount: active, completedCount: done };
   }, [tasks]);
   const totalTasks = tasks.length;
-  const completionRate =
-    totalTasks === 0 ? 0 : Math.round((completedCount / totalTasks) * 100);
 
   const projectCount = useMemo(() => {
     const projects = new Set<string>();
@@ -981,21 +979,6 @@ const Planner: React.FC = () => {
       ).length,
     [tasksWithMeta]
   );
-
-  const dueThisWeekCount = useMemo(
-    () =>
-      tasksWithMeta.filter(
-        (t) =>
-          !t.finishedAt &&
-          t.overdueBy === 0 &&
-          t.liveRemaining > 0 &&
-          t.liveRemaining <= 7
-      ).length,
-    [tasksWithMeta]
-  );
-
-  const averageDaysRemaining = useMemo(() => {
-    const active = tasksWithMeta.filter((t) => !t.finishedAt);
     if (active.length === 0) return 0;
     const total = active.reduce((sum, t) => sum + t.liveRemaining, 0);
     return Math.round(total / active.length);
@@ -1710,12 +1693,6 @@ const Planner: React.FC = () => {
       intent: "danger",
     },
     {
-      label: "Due in 7 days",
-      value: dueThisWeekCount,
-      highlight: dueThisWeekCount > 0,
-      intent: "warn",
-    },
-    {
       label: "Urgent / Important",
       value: tasksWithMeta.filter(
         (task) => task.region === 4 && !task.finishedAt
@@ -1725,8 +1702,6 @@ const Planner: React.FC = () => {
     },
     { label: "Active", value: activeCount, intent: "neutral" },
     { label: "Completed", value: completedCount, intent: "neutral" },
-    { label: "Completion", value: `${completionRate}%`, intent: "neutral" },
-    { label: "Avg days left", value: `${averageDaysRemaining}d`, intent: "neutral" },
     { label: "Projects", value: projectCount, intent: "neutral" },
     { label: "Total tasks", value: totalTasks, intent: "neutral" },
   ];
@@ -1755,7 +1730,7 @@ const Planner: React.FC = () => {
             </Button>
           </div>
         </div>
-        <div className="grid grid-flow-col auto-cols-[minmax(110px,1fr)] gap-3 overflow-x-auto pb-2 mb-4 text-center">
+        <div className="grid grid-flow-col auto-cols-[minmax(150px,1fr)] gap-3 overflow-x-auto pb-2 mb-4 text-center">
           {statCards.map((stat) => {
             const tone =
               stat.intent === "danger"

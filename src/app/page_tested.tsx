@@ -45,6 +45,12 @@ interface Task {
   finishedAt?: string;
 }
 
+type TaskWithMeta = Task & {
+  liveRemaining: number;
+  overdueBy: number;
+  deadlineStatus: string;
+};
+
 // ---- Constants / helpers ----
 
 const STORAGE_KEY = "gplanner_v1_tasks";
@@ -119,6 +125,31 @@ function diffInDays(fromISO: string, toISO: string): number {
   const from = new Date(fromISO + "T00:00:00");
   const to = new Date(toISO + "T00:00:00");
   return Math.ceil((to.getTime() - from.getTime()) / MS_PER_DAY);
+}
+
+function describeDeadline(diffDays: number): string {
+  if (diffDays < 0) {
+    const overdue = Math.abs(diffDays);
+    if (overdue === 1) return "Overdue by 1 day";
+    return `Overdue by ${overdue} days`;
+  }
+  if (diffDays === 0) return "Due today";
+  if (diffDays === 1) return "Due tomorrow";
+  if (diffDays <= 7) return `Due in ${diffDays} days`;
+  if (diffDays <= 30) {
+    const weeks = Math.ceil(diffDays / 7);
+    return `Due in ${weeks} week${weeks === 1 ? "" : "s"}`;
+  }
+  const months = Math.ceil(diffDays / 30);
+  return `Due in ${months} month${months === 1 ? "" : "s"}`;
+}
+
+function withDeadlineMeta(task: Task, todayISO: string): TaskWithMeta {
+  const diff = diffInDays(todayISO, task.deadline);
+  const liveRemaining = Math.max(0, diff);
+  const overdueBy = diff < 0 ? Math.abs(diff) : 0;
+  const deadlineStatus = describeDeadline(diff);
+  return { ...task, liveRemaining, overdueBy, deadlineStatus };
 }
 
 function addDays(baseISO: string, days: number): string {
@@ -304,185 +335,210 @@ function splitCSVLine(line: string, expectedCols: number): string[] {
 }
 
 function parseCSV(text: string): Task[] {
-  // Robust CSV import that fixes the "all deadlines become today" bug.
-  //
-  // Key behaviors:
-  // 1) Header names are case-insensitive and whitespace-tolerant (e.g., "Deadline", "deadline ", "due date").
-  // 2) Date parsing accepts ISO (YYYY-MM-DD) and common Excel exports (MM/DD/YYYY).
-  // 3) We recompute region/bucket/remainingDays from the imported DEADLINE relative to *today*,
-  //    so old CSVs still map correctly and editing a task shows the right deadline.
-
+  // Supports BOTH:
+  // 1) "v1" CSVs exported by this app (region/bucket/remainingDays/createdAt...)
+  // 2) Legacy CSVs (date/deadline/stars/timeScale/posAngle_deg/posRadius_fraction/finishDate...)
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return [];
 
-  const splitCSVLine = (line: string): string[] => {
-    const out: string[] = [];
-    let cur = "";
-    let inQuotes = false;
+  const header = lines[0].split(",").map((h) => h.trim());
+  const idx = (name: string) => header.indexOf(name);
 
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (ch === "," && !inQuotes) {
-        out.push(cur);
-        cur = "";
-      } else {
-        cur += ch;
-      }
-    }
-    out.push(cur);
-    return out.map((v) => v.trim());
-  };
+  const idxId = idx("id");
+  const idxDate = idx("date");
+  const idxDeadline = idx("deadline");
+  const idxProject = idx("project");
+  const idxProjectTag = idx("projectTag");
+  const idxProjectColor = idx("projectColor");
+  const idxTask = idx("task");
 
-  const rawHeaders = splitCSVLine(lines[0]);
-  const headers = rawHeaders.map((h) =>
-    h.replace(/^\uFEFF/, "").trim().toLowerCase()
-  );
+  // v1/new format
+  const idxRegion = idx("region");
+  const idxBucket = idx("bucket");
+  const idxRemaining = idx("remainingDays");
+  const idxCreated = idx("createdAt");
+  const idxFinished = idx("finishedAt");
 
-  const idx = (...names: string[]): number => {
-    for (const n of names) {
-      const j = headers.indexOf(n.toLowerCase());
-      if (j !== -1) return j;
-    }
-    return -1;
-  };
+  // legacy fields
+  const idxStars = idx("stars");
+  const idxFinishDate = idx("finishDate"); // legacy
+  const idxTimeScale = idx("timeScale");
+  const idxQuadrant = idx("quadrant");
 
-  const get = (row: string[], i: number): string => {
-    if (i < 0 || i >= row.length) return "";
-    return (row[i] ?? "").trim().replace(/^"|"$/g, "");
-  };
+  const tasks: Task[] = [];
 
-  const parseDateFlexible = (value: string): Date | null => {
-    const v = (value ?? "").trim().replace(/^"|"$/g, "");
-    if (!v) return null;
-
-    // ISO-ish: YYYY-MM-DD or YYYY/MM/DD
-    const iso = v.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
-    if (iso) {
-      const y = Number(iso[1]);
-      const m = Number(iso[2]);
-      const d = Number(iso[3]);
-      const dt = new Date(y, m - 1, d);
-      if (!Number.isNaN(dt.getTime())) return dt;
-    }
-
-    // Excel / US style: M/D/YYYY or MM/DD/YYYY (also supports '-')
-    const us = v.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-    if (us) {
-      const m = Number(us[1]);
-      const d = Number(us[2]);
-      const y = Number(us[3]);
-      const dt = new Date(y, m - 1, d);
-      if (!Number.isNaN(dt.getTime())) return dt;
-    }
-
-    // Excel serial number (days since 1899-12-30)
-    if (/^\d+(\.\d+)?$/.test(v)) {
-      const n = Number(v);
-      if (!Number.isNaN(n) && n > 20000 && n < 80000) {
-        const epoch = new Date(Date.UTC(1899, 11, 30));
-        const dt = new Date(epoch.getTime() + n * 24 * 60 * 60 * 1000);
-        if (!Number.isNaN(dt.getTime())) return dt;
-      }
-    }
-
-    // Fallback: JS parser for full ISO timestamps
-    const dt = new Date(v);
-    if (!Number.isNaN(dt.getTime())) return dt;
-
-    return null;
-  };
-
-  const normalizeToISO = (value: string, fallbackISO: string): string => {
-    const dt = parseDateFlexible(value);
-    return dt ? formatDateYYYYMMDD(dt) : fallbackISO;
-  };
+  const hasNewPlacement =
+    idxRegion >= 0 && idxBucket >= 0 && idxRemaining >= 0 && idxCreated >= 0;
 
   const parseISODate = (iso: string): Date | null => {
+    // Expect yyyy-MM-dd
     if (!iso) return null;
     const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!m) return null;
     const y = Number(m[1]);
     const mo = Number(m[2]);
     const d = Number(m[3]);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d))
+      return null;
     const dt = new Date(y, mo - 1, d);
-    if (Number.isNaN(dt.getTime())) return null;
+    if (
+      dt.getFullYear() !== y ||
+      dt.getMonth() !== mo - 1 ||
+      dt.getDate() !== d
+    )
+      return null;
     return dt;
   };
 
-  const diffDaysCeil = (fromISO: string, toISO: string): number => {
+  const diffDaysCeil = (fromISO: string, toISO: string): number | null => {
     const from = parseISODate(fromISO);
     const to = parseISODate(toISO);
-    if (!from || !to) return 0;
-    const msPerDay = 24 * 60 * 60 * 1000;
-    return Math.ceil((to.getTime() - from.getTime()) / msPerDay);
+    if (!from || !to) return null;
+    const ms = to.getTime() - from.getTime();
+    const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+    return Number.isFinite(days) ? days : null;
   };
 
-  const iId = idx("id");
-  const iDate = idx("date", "today");
-  const iDeadline = idx("deadline", "due", "due_date", "due date");
-  const iProject = idx("project");
-  const iProjectTag = idx("projecttag", "project_tag", "project tag", "tag");
-  const iProjectColor = idx("projectcolor", "project_color", "project color", "color");
-  const iTask = idx("task", "title", "description");
-  const iCreatedAt = idx("createdat", "created_at", "created at");
-  const iFinishedAt = idx("finishedat", "finished_at", "finished at", "finishdate", "finish_date");
+  const coerceBucket = (v: string): TimeBucket => {
+    const s = (v || "").trim().toLowerCase();
+    if (s === "days" || s === "weeks" || s === "months" || s === "years")
+      return s;
+    if (s === "day") return "days";
+    if (s === "week") return "weeks";
+    if (s === "month") return "months";
+    if (s === "year") return "years";
+    return "days";
+  };
 
-  const today = todayISO();
-  const nowISO = new Date().toISOString();
+  // For legacy imports, placement should reflect the CURRENT day.
+  const nowISO = (() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  })();
 
-  const tasks: Task[] = [];
+  const normalizeDateInput = (value: string): string | null => {
+    const trimmed = (value || "").trim();
+    if (!trimmed) return null;
+    // Accept yyyy-MM-dd or yyyy-MM-ddTHH:mm:ss
+    const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return formatDateYYYYMMDD(parsed);
+  };
 
-  for (let r = 1; r < lines.length; r++) {
-    const row = splitCSVLine(lines[r]);
-    if (row.length === 0) continue;
+  const normalizeOrFallback = (value: string, fallback: string): string =>
+    normalizeDateInput(value) ?? fallback;
 
-    const dateISO = normalizeToISO(get(row, iDate), today);
-    const deadlineISO = normalizeToISO(get(row, iDeadline), dateISO);
+  const placementFromDeadline = (deadlineISO: string) => {
+    const days = diffDaysCeil(nowISO, deadlineISO);
+    if (days === null) return null;
+    const clampedDays = Math.max(1, days);
+    const placement =
+      bucketFromDays(clampedDays) ||
+      ({ region: 4, bucket: "days" } as const);
+    return { remainingDays: clampedDays, ...placement };
+  };
 
-    // Recompute placement from DEADLINE relative to today
-    let remainingDays = diffDaysCeil(today, deadlineISO);
-    if (!Number.isFinite(remainingDays)) remainingDays = 0;
-    remainingDays = Math.max(0, remainingDays);
+  for (let i = 1; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trim()) continue;
 
-    const placement = bucketFromDays(Math.max(1, remainingDays)) ?? { region: 1 as StarRegion, bucket: "years" as TimeBucket };
-    const region = placement.region;
-    const bucket = placement.bucket;
+    const cols = splitCSVLine(raw, header.length);
+    if (cols.length < header.length) continue;
 
-    const id = get(row, iId) || `csv-${Date.now()}-${r}`;
-    const project = get(row, iProject) || "Untitled Project";
-    const projectTag = get(row, iProjectTag) || undefined;
-    const projectColor = get(row, iProjectColor) || undefined;
-    const task = get(row, iTask) || "";
+    const id = (idxId >= 0 ? cols[idxId] : "") || `csv-${i}`;
+    const rawDate = idxDate >= 0 ? cols[idxDate] : "";
+    const rawDeadline = idxDeadline >= 0 ? cols[idxDeadline] : "";
+    const date = normalizeOrFallback(rawDate, nowISO);
+    const deadline = normalizeOrFallback(rawDeadline, date);
+    const deadlinePlacement = placementFromDeadline(deadline);
 
-    const createdAtRaw = get(row, iCreatedAt);
+    const project = (idxProject >= 0 ? cols[idxProject] : "") || "";
+    const projectTag = (idxProjectTag >= 0 ? cols[idxProjectTag] : "") || "";
+    const projectColor =
+      (idxProjectColor >= 0 ? cols[idxProjectColor] : "") || "";
+    const task = (idxTask >= 0 ? cols[idxTask] : "") || "";
+
+    const finishedAtRaw =
+      (idxFinished >= 0 ? cols[idxFinished] : "") ||
+      (idxFinishDate >= 0 ? cols[idxFinishDate] : "");
+    const finishedAt = finishedAtRaw ? finishedAtRaw : undefined;
+
     const createdAt =
-      createdAtRaw && !Number.isNaN(new Date(createdAtRaw).getTime())
-        ? new Date(createdAtRaw).toISOString()
-        : nowISO;
+      (idxCreated >= 0 ? cols[idxCreated] : "") || new Date().toISOString();
 
-    const finishedAtRaw = get(row, iFinishedAt);
-    const finishedAt =
-      finishedAtRaw && !Number.isNaN(new Date(finishedAtRaw).getTime())
-        ? new Date(finishedAtRaw).toISOString()
-        : undefined;
+    if (hasNewPlacement) {
+      const region =
+        deadlinePlacement?.region ||
+        (parseInt(cols[idxRegion] || "4", 10) as StarRegion) ||
+        4;
+      const bucket =
+        deadlinePlacement?.bucket || coerceBucket(cols[idxBucket] || "days");
+      const remainingDays =
+        deadlinePlacement?.remainingDays ||
+        Math.max(1, parseInt(cols[idxRemaining] || "1", 10));
+
+      tasks.push({
+        id,
+        date,
+        deadline,
+        project,
+        projectTag,
+        projectColor,
+        task,
+        region,
+        bucket,
+        remainingDays,
+        createdAt,
+        finishedAt,
+      });
+      continue;
+    }
+
+    // Legacy CSV path:
+    // Compute remainingDays using CURRENT day (nowISO) so tasks land in the correct time-horizon region.
+    let remainingDays =
+      deadlinePlacement?.remainingDays ?? diffDaysCeil(nowISO, deadline);
+
+    // If deadline parsing fails, try using saved 'date' -> deadline delta.
+    if (remainingDays === null) remainingDays = diffDaysCeil(date, deadline);
+
+    // If still null, fall back to timeScale/quadrant textual buckets.
+    if (remainingDays === null) {
+      const ts =
+        (idxTimeScale >= 0 ? cols[idxTimeScale] : "").trim().toLowerCase();
+      const q =
+        (idxQuadrant >= 0 ? cols[idxQuadrant] : "").trim().toLowerCase();
+
+      if (ts === "day" || q.includes("1–7") || q.includes("1-7")) remainingDays = 3;
+      else if (ts === "week" || q.includes("1–4") || q.includes("1-4")) remainingDays = 14;
+      else if (ts === "month" || q.includes("1–12") || q.includes("1-12")) remainingDays = 90;
+      else if (ts === "year" || q.includes("1–10") || q.includes("1-10")) remainingDays = 730;
+      else remainingDays = 3;
+    }
+
+    remainingDays = remainingDays ?? 1;
+
+    // Clamp: overdue or zero goes to most urgent bucket
+    if (remainingDays <= 0) remainingDays = 1;
+
+    const placement =
+      bucketFromDays(remainingDays) || ({ region: 4, bucket: "days" } as const);
 
     tasks.push({
       id,
-      date: dateISO,
-      deadline: deadlineISO,
+      date,
+      deadline,
       project,
       projectTag,
       projectColor,
       task,
-      region,
-      bucket,
+      region: placement.region,
+      bucket: placement.bucket,
       remainingDays,
       createdAt,
       finishedAt,
@@ -516,6 +572,21 @@ const Planner: React.FC = () => {
   const [editTask, setEditTask] = useState<Task | null>(null);
   const [focusedColor, setFocusedColor] = useState<string>("");
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
+
+  // ---- Power-user filters ----
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [filterProject, setFilterProject] = useState<string>("all");
+  const [filterBucket, setFilterBucket] = useState<TimeBucket | "all">("all");
+  const [filterRegion, setFilterRegion] = useState<StarRegion | "all">("all");
+  const [showCompletedOnMap, setShowCompletedOnMap] = useState<boolean>(false);
+
+  const [hovered, setHovered] = useState<{
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const mapWrapRef = useRef<HTMLDivElement | null>(null);
+
 
   const [initialSetupOpen, setInitialSetupOpen] = useState(false);
   const [hasShownInitial, setHasShownInitial] = useState(false);
@@ -590,6 +661,35 @@ const Planner: React.FC = () => {
     setCsvText(tasksToCSV(tasks));
   }, [tasks, mounted]);
 
+  useEffect(() => {
+    setTasks((prev) => {
+      let changed = false;
+      const next = prev.map((task) => {
+        const liveRemaining = Math.max(0, diffInDays(today, task.deadline));
+        const placement =
+          bucketFromDays(Math.max(1, liveRemaining)) ?? {
+            region: task.region,
+            bucket: task.bucket,
+          };
+        if (
+          liveRemaining === task.remainingDays &&
+          placement.region === task.region &&
+          placement.bucket === task.bucket
+        ) {
+          return task;
+        }
+        changed = true;
+        return {
+          ...task,
+          remainingDays: liveRemaining,
+          region: placement.region,
+          bucket: placement.bucket,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [today]);
+
   // Persist maxPerRegion
   useEffect(() => {
     if (!mounted) return;
@@ -609,9 +709,14 @@ const Planner: React.FC = () => {
     } catch {}
   }, [csvFileName, mounted]);
 
+  const tasksWithMeta = useMemo(
+    () => tasks.map((task) => withDeadlineMeta(task, today)),
+    [tasks, today]
+  );
+
   const selectedTask = useMemo(
-    () => tasks.find((t) => t.id === activeId) ?? null,
-    [tasks, activeId]
+    () => tasksWithMeta.find((t) => t.id === activeId) ?? null,
+    [tasksWithMeta, activeId]
   );
 
   const projectTagLookup = useMemo(() => {
@@ -668,10 +773,52 @@ const Planner: React.FC = () => {
     useState<string>(DEFAULT_PROJECT_COLOR);
   const taskRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const plottedTasks = useMemo(
-    () => tasks.filter((t) => !t.finishedAt),
-    [tasks]
-  );
+  const displayedTasks = useMemo(() => {
+    const q = (searchQuery || "").toLowerCase().trim();
+
+    const filtered = tasksWithMeta.filter((t) => {
+      // status
+      if (taskFilter === "active" && t.finishedAt) return false;
+      if (taskFilter === "completed" && !t.finishedAt) return false;
+
+      // focus color (existing feature)
+      if (
+        focusedColor &&
+        resolveProjectColor(t.project, t.projectColor) !== focusedColor
+      )
+        return false;
+
+      // project
+      if (filterProject !== "all" && (t.project || "") !== filterProject)
+        return false;
+
+      // horizon / region
+      if (filterBucket !== "all" && t.bucket !== filterBucket) return false;
+      if (filterRegion !== "all" && t.region !== filterRegion) return false;
+
+      // search
+      if (!q) return true;
+      const hay = [t.task, t.project, t.projectTag, t.deadline]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+
+    return filtered;
+  }, [
+    tasksWithMeta,
+    taskFilter,
+    focusedColor,
+    searchQuery,
+    filterProject,
+    filterBucket,
+    filterRegion,
+  ]);
+
+  const plottedTasks = useMemo(() => {
+    return displayedTasks.filter((t) => (showCompletedOnMap ? true : !t.finishedAt));
+  }, [displayedTasks, showCompletedOnMap]);
 
   const colorOptions = useMemo(() => {
     const map = new Map<
@@ -750,18 +897,6 @@ const Planner: React.FC = () => {
     }
   };
 
-  const displayedTasks = useMemo(() => {
-    const filtered = tasks.filter((t) => {
-      if (taskFilter === "active") return !t.finishedAt;
-      if (taskFilter === "completed") return !!t.finishedAt;
-      return true;
-    });
-    if (!focusedColor) return filtered;
-    return filtered.filter(
-      (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
-    );
-  }, [tasks, focusedColor, taskFilter]);
-
   const projectSummaries = useMemo(() => {
     const map = new Map<
       string,
@@ -807,8 +942,6 @@ const Planner: React.FC = () => {
     return { activeCount: active, completedCount: done };
   }, [tasks]);
   const totalTasks = tasks.length;
-  const completionRate =
-    totalTasks === 0 ? 0 : Math.round((completedCount / totalTasks) * 100);
 
   const projectCount = useMemo(() => {
     const projects = new Set<string>();
@@ -831,13 +964,37 @@ const Planner: React.FC = () => {
 
   const dueSoonTasks = useMemo(
     () =>
-      tasks
-        .filter((t) => !t.finishedAt)
+      tasksWithMeta
+        .filter((t) => !t.finishedAt && t.overdueBy === 0)
         .slice()
         .sort((a, b) => a.deadline.localeCompare(b.deadline))
         .slice(0, 3),
-    [tasks]
+    [tasksWithMeta]
   );
+
+  const overdueCount = useMemo(
+    () =>
+      tasksWithMeta.filter(
+        (t) => !t.finishedAt && t.overdueBy > 0
+      ).length,
+    [tasksWithMeta]
+  );
+    if (active.length === 0) return 0;
+    const total = active.reduce((sum, t) => sum + t.liveRemaining, 0);
+    return Math.round(total / active.length);
+  }, [tasksWithMeta]);
+
+  const nextPriorityTask = useMemo(() => {
+    const active = tasksWithMeta.filter((t) => !t.finishedAt);
+    if (active.length === 0) return null;
+    const sorted = active
+      .slice()
+      .sort((a, b) => {
+        if (a.overdueBy !== b.overdueBy) return b.overdueBy - a.overdueBy;
+        return a.liveRemaining - b.liveRemaining;
+      });
+    return sorted[0] ?? null;
+  }, [tasksWithMeta]);
 
   useEffect(() => {
     if (!activeId && tasks.length > 0) {
@@ -1139,6 +1296,12 @@ const Planner: React.FC = () => {
     months: 12,
     years: 10,
   };
+  const bucketByRegion: Record<StarRegion, TimeBucket> = {
+    4: "days",
+    3: "weeks",
+    2: "months",
+    1: "years",
+  };
 
   const remainingToStep = (t: Task): number => {
     const n = stepsForBucket[t.bucket];
@@ -1266,6 +1429,21 @@ const Planner: React.FC = () => {
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const normalizeAngle = (deg: number) => ((deg % 360) + 360) % 360;
+  const regionFromAngle = (deg: number): StarRegion => {
+    const angle = normalizeAngle(deg);
+    for (const [regionKey, range] of Object.entries(regionAngles)) {
+      const start = normalizeAngle(range.start);
+      const end = normalizeAngle(range.end);
+      const reg = Number(regionKey) as StarRegion;
+      if (start <= end) {
+        if (angle >= start && angle <= end) return reg;
+      } else {
+        if (angle >= start || angle <= end) return reg;
+      }
+    }
+    return 4;
+  };
 
   const handleDotPointerDown = (id: string, e: PointerEvent) => {
     e.preventDefault();
@@ -1292,6 +1470,9 @@ const Planner: React.FC = () => {
     const dx = px - cx;
     const dy = py - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
+    const angleDeg = (Math.atan2(cy - py, dx) * 180) / Math.PI;
+    const newRegion = regionFromAngle(angleDeg);
+    const newBucket = bucketByRegion[newRegion];
     if (dist < 5) return;
 
     const distFactor = Math.min(
@@ -1306,7 +1487,7 @@ const Planner: React.FC = () => {
     setTasks((prev) =>
       prev.map((t) => {
         if (t.id !== draggingId) return t;
-        const nSteps = stepsForBucket[t.bucket];
+        const nSteps = stepsForBucket[newBucket];
         let step = 1;
         if (nSteps <= 1) {
           step = 1;
@@ -1316,13 +1497,15 @@ const Planner: React.FC = () => {
           if (step > nSteps) step = nSteps;
         }
 
-        const newRemaining = stepToRemainingDays(t.bucket, step);
+        const newRemaining = stepToRemainingDays(newBucket, step);
         const newDeadline = addDays(today, newRemaining);
 
         return {
           ...t,
           remainingDays: newRemaining,
           deadline: newDeadline,
+          bucket: newBucket,
+          region: newRegion,
         };
       })
     );
@@ -1500,6 +1683,28 @@ const Planner: React.FC = () => {
   };
 
   // ---- Render ----
+  const showDotTags = plottedTasks.length <= 18;
+
+  const statCards = [
+    {
+      label: "Overdue",
+      value: overdueCount,
+      highlight: overdueCount > 0,
+      intent: "danger",
+    },
+    {
+      label: "Urgent / Important",
+      value: tasksWithMeta.filter(
+        (task) => task.region === 4 && !task.finishedAt
+      ).length,
+      highlight: true,
+      intent: "neutral",
+    },
+    { label: "Active", value: activeCount, intent: "neutral" },
+    { label: "Completed", value: completedCount, intent: "neutral" },
+    { label: "Projects", value: projectCount, intent: "neutral" },
+    { label: "Total tasks", value: totalTasks, intent: "neutral" },
+  ];
 
   return (
     <div className="w-full min-h-screen bg-slate-50 text-slate-900 flex justify-center">
@@ -1525,41 +1730,64 @@ const Planner: React.FC = () => {
             </Button>
           </div>
         </div>
-        <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 mb-6 text-center">
-        {[
-          {
-            label: "Urgent / Important",
-            value: tasks.filter(
-              (task) => task.region === 4 && !task.finishedAt
-            ).length,
-            highlight: true,
-          },
-          { label: "Active", value: activeCount },
-          { label: "Completed", value: completedCount },
-          {
-            label: "Completion",
-            value: `${completionRate}%`,
-          },
-          { label: "Projects", value: projectCount },
-          { label: "Total tasks", value: totalTasks },
-        ].map((stat) => (
-            <div
-              key={stat.label}
-              className={`rounded-2xl border px-3 py-2.5 shadow-sm ${
-                stat.highlight
-                  ? "border-red-200 bg-red-50"
-                  : "border-slate-200 bg-white"
-              }`}
-            >
-              <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">
-                {stat.label}
-              </p>
-              <p className="text-xl font-bold text-slate-900 mt-1">
-                {stat.value}
-              </p>
-            </div>
-          ))}
+        <div className="grid grid-flow-col auto-cols-[minmax(150px,1fr)] gap-3 overflow-x-auto pb-2 mb-4 text-center">
+          {statCards.map((stat) => {
+            const tone =
+              stat.intent === "danger"
+                ? "border-red-200 bg-rose-50"
+                : stat.intent === "warn"
+                ? "border-amber-200 bg-amber-50"
+                : stat.highlight
+                ? "border-slate-300 bg-white"
+                : "border-slate-200 bg-white";
+            return (
+              <div
+                key={stat.label}
+                className={`rounded-2xl border px-3 py-2.5 shadow-sm ${tone}`}
+              >
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">
+                  {stat.label}
+                </p>
+                <p className="text-xl font-bold text-slate-900 mt-1">
+                  {stat.value}
+                </p>
+              </div>
+            );
+          })}
         </div>
+        {nextPriorityTask && (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+                Next
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  {nextPriorityTask.task}
+                </p>
+                <p className="text-[11px] text-slate-600">
+                  {nextPriorityTask.deadlineStatus} &middot;{" "}
+                  {stars(nextPriorityTask.region)} {regionLabel(nextPriorityTask.region)}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {nextPriorityTask.project && (
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-700">
+                  {nextPriorityTask.project}
+                </span>
+              )}
+              {nextPriorityTask.projectTag && (
+                <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                  {nextPriorityTask.projectTag}
+                </span>
+              )}
+              <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-700">
+                {compactLabel(nextPriorityTask)} left
+              </span>
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-4 items-start">
           {/* Left: New */}
@@ -1597,6 +1825,28 @@ const Planner: React.FC = () => {
                     onChange={(e) => setNewDeadline(e.target.value)}
                     className="h-8 text-xs"
                   />
+
+                  <div className="col-span-2 flex flex-wrap gap-2 text-[10px] text-slate-600">
+                    <span className="font-semibold text-slate-700">
+                      Deadline presets
+                    </span>
+                    {[
+                      { label: "Today +1", days: 1 },
+                      { label: "This week", days: 3 },
+                      { label: "Next week", days: 7 },
+                      { label: "Next month", days: 30 },
+                      { label: "Next quarter", days: 90 },
+                    ].map((option) => (
+                      <button
+                        key={option.label}
+                        type="button"
+                        onClick={() => setNewDeadline(addDays(today, option.days))}
+                        className="rounded-full border border-slate-200 bg-slate-50 px-2 py-[3px] font-semibold hover:border-slate-400"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
 
                   <label htmlFor="project" className="text-xs">
                     Project
@@ -1738,7 +1988,7 @@ const Planner: React.FC = () => {
 
           {/* Center: geometry planner */}
           <div className="flex-1 flex flex-col items-center w-full px-2">
-            <div className="relative flex justify-center items-center w-full">
+            <div ref={mapWrapRef} className="relative flex justify-center items-center w-full">
               <svg
                 ref={svgRef}
                 width={size}
@@ -1746,7 +1996,7 @@ const Planner: React.FC = () => {
                 className="rounded-3xl bg-slate-100 shadow-inner border border-slate-200 max-w-full"
                 onPointerMove={handleDotPointerMove}
                 onPointerUp={handleDotPointerUp}
-                onPointerLeave={handleDotPointerUp}
+                onPointerLeave={(e) => { handleDotPointerUp(e as any); setHovered(null); }}
               >
                 {/* outer circle */}
                 <circle
@@ -1843,6 +2093,20 @@ const Planner: React.FC = () => {
                     <g
                       key={t.id}
                       onPointerDown={(e) => handleDotPointerDown(t.id, e)}
+                      onPointerEnter={(e) => {
+                        const rect = mapWrapRef.current?.getBoundingClientRect();
+                        const x = rect ? e.clientX - rect.left : e.clientX;
+                        const y = rect ? e.clientY - rect.top : e.clientY;
+                        setHovered({ id: t.id, x, y });
+                      }}
+                      onPointerLeave={() => setHovered(null)}
+                      onPointerMove={(e) => {
+                        if (!hovered || hovered.id !== t.id) return;
+                        const rect = mapWrapRef.current?.getBoundingClientRect();
+                        const x = rect ? e.clientX - rect.left : e.clientX;
+                        const y = rect ? e.clientY - rect.top : e.clientY;
+                        setHovered({ id: t.id, x, y });
+                      }}
                       style={{ cursor: "pointer" }}
                     >
                       <circle
@@ -1865,7 +2129,7 @@ const Planner: React.FC = () => {
                       >
                         {label}
                       </text>
-                      {tagLabel && (
+                      {tagLabel && (showDotTags || (hovered && hovered.id === t.id)) && (
                         <text
                           x={pos.x}
                           y={pos.y + r + 12}
@@ -1881,6 +2145,75 @@ const Planner: React.FC = () => {
                   );
                 })}
               </svg>
+              {hovered ? (() => {
+                const t = plottedTasks.find((x) => x.id === hovered.id);
+                if (!t) return null;
+                const status = t.finishedAt ? "Completed" : "Active";
+                return (
+                  <div
+                    className="pointer-events-none absolute z-20 rounded-xl border border-slate-200 bg-white/95 shadow-lg px-3 py-2 text-xs text-slate-900 max-w-[340px]"
+                    style={{ left: hovered.x + 12, top: hovered.y + 12 }}
+                  >
+                    <div className="font-semibold truncate">{t.task || "Untitled task"}</div>
+                    <div className="text-slate-600 mt-0.5">
+                      <span className="font-medium">{t.project || "No project"}</span>
+                      {t.projectTag ? <span className="text-slate-400"> • {t.projectTag}</span> : null}
+                    </div>
+                    <div className="text-slate-600 mt-0.5">
+                      Due: <span className="font-medium text-slate-900">{t.deadline}</span>{" "}
+                      <span className="text-slate-400">
+                        ({t.deadlineStatus}; {compactLabel(t)}; {t.remainingDays}d)
+                      </span>
+                    </div>
+                    <div className="text-slate-500 mt-0.5">{status} • Region {t.region} • {t.bucket}</div>
+                  </div>
+                );
+              })() : null}
+            </div>
+            <div className="mt-3 w-full max-w-[960px]">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Focus by color / project
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="text-[11px]"
+                  onClick={() => setFocusedColor("")}
+                  disabled={!focusedColor}
+                >
+                  Clear focus
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {colorOptions.length === 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Add a task with a project to see quick focus chips here.
+                  </p>
+                )}
+                {colorOptions.map((opt) => (
+                  <button
+                    key={opt.color}
+                    type="button"
+                    onClick={() => setFocusedColor(opt.color)}
+                    className={`flex items-center gap-2 rounded-full border px-3 py-2 text-[11px] font-semibold transition ${
+                      focusedColor === opt.color
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 bg-white text-slate-800 hover:border-slate-400"
+                    }`}
+                  >
+                    <span
+                      className="inline-flex h-4 w-4 rounded-full border border-slate-900"
+                      style={{ backgroundColor: opt.color }}
+                    />
+                    <span>{opt.label}</span>
+                    <span className="text-[10px] text-slate-500">
+                      {opt.count} task{opt.count === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1896,6 +2229,75 @@ const Planner: React.FC = () => {
                   Select a dot or card to review and edit it right inside this
                   panel.
                 </CardDescription>
+                <div className="mt-3 space-y-2">
+                  <Input
+                    placeholder="Search tasks, projects, tags…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                      value={taskFilter}
+                      onChange={(e) => setTaskFilter(e.target.value as any)}
+                    >
+                      <option value="active">Active</option>
+                      <option value="completed">Completed</option>
+                      <option value="all">All</option>
+                    </select>
+
+                    <select
+                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                      value={filterProject}
+                      onChange={(e) => setFilterProject(e.target.value)}
+                    >
+                      <option value="all">All projects</option>
+                      {[...new Set(tasks.map((t) => t.project).filter(Boolean))].sort().map((p) => (
+                        <option key={p as string} value={p as string}>{p as string}</option>
+                      ))}
+                    </select>
+
+                    <select
+                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                      value={filterBucket}
+                      onChange={(e) => setFilterBucket(e.target.value as any)}
+                    >
+                      <option value="all">All horizons</option>
+                      <option value="days">Days</option>
+                      <option value="weeks">Weeks</option>
+                      <option value="months">Months</option>
+                      <option value="years">Years</option>
+                    </select>
+
+                    <select
+                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs"
+                      value={filterRegion}
+                      onChange={(e) =>
+                        setFilterRegion(
+                          e.target.value === "all"
+                            ? "all"
+                            : (parseInt(e.target.value, 10) as any)
+                        )
+                      }
+                    >
+                      <option value="all">All regions</option>
+                      <option value="1">Region 1</option>
+                      <option value="2">Region 2</option>
+                      <option value="3">Region 3</option>
+                      <option value="4">Region 4</option>
+                    </select>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-[11px] text-slate-600 select-none">
+                    <input
+                      type="checkbox"
+                      checked={showCompletedOnMap}
+                      onChange={(e) => setShowCompletedOnMap(e.target.checked)}
+                    />
+                    Show completed tasks on map
+                  </label>
+                </div>
               </CardHeader>
               <CardContent className="pt-1 flex flex-col h-full">
                 <div className="mb-3">
@@ -1903,93 +2305,75 @@ const Planner: React.FC = () => {
                     Selected task
                   </p>
                   {selectedTask ? (
-                    <div className="rounded-lg border border-slate-200 bg-white/80 p-3 text-[11px] space-y-1">
-                      <p className="font-semibold text-slate-900">
-                        {selectedTask.task}
-                      </p>
-                      <p className="text-slate-600">
-                        Remaining:{" "}
-                        <span className="font-semibold text-slate-900">
-                          {compactLabel(selectedTask)} (
-                          {selectedTask.remainingDays} days)
-                        </span>
-                      </p>
-                      <p className="text-slate-600">
-                        Status:{" "}
-                        <span
-                          className={`inline-flex items-center rounded-full px-2 py-[1px] text-[10px] font-semibold border ${
-                            selectedTask.finishedAt
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : "bg-sky-50 text-sky-700 border-sky-200"
-                          }`}
-                        >
-                          {selectedTask.finishedAt ? "Completed" : "Active"}
-                        </span>
-                      </p>
-                      {selectedTask.project && (
-                        <p className="text-slate-600">
-                          Project:{" "}
-                          <span className="font-semibold">
-                            {selectedTask.project}
-                          </span>
-                        </p>
-                      )}
-                      {selectedTask.projectTag && (
-                        <p className="text-slate-600">
-                          Tag:{" "}
-                          <span className="font-semibold">
-                            {selectedTask.projectTag}
-                          </span>
-                        </p>
-                      )}
-                      <p className="flex items-center gap-2 text-slate-600">
-                        Color:
-                        <span
-                          className="inline-flex h-3 w-6 rounded border border-slate-400"
-                          style={{
-                            backgroundColor: resolveProjectColor(
-                              selectedTask.project,
-                              selectedTask.projectColor
-                            ),
-                          }}
-                        />
-                        <span className="font-mono text-[10px]">
-                          {resolveProjectColor(
-                            selectedTask.project,
-                            selectedTask.projectColor
-                          )}
-                        </span>
-                      </p>
-                      <p className="text-slate-600">
-                        Date:{" "}
-                        <span className="font-semibold">
-                          {selectedTask.date}
-                        </span>
-                      </p>
-                      <p className="text-slate-600">
-                        Deadline:{" "}
-                        <span className="font-semibold">
-                          {formatDateMMDDYYYYFromISODate(
-                            selectedTask.deadline
-                          )}
-                        </span>
-                      </p>
-                      <p className="text-slate-600">
-                        Region:{" "}
-                        <span className="text-amber-500 font-semibold">
-                          {stars(selectedTask.region)}
-                        </span>{" "}
-                        {regionRange(selectedTask.region)}
-                      </p>
+                    <div className="rounded-lg border border-slate-200 bg-white/90 p-3 text-[11px] space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="font-semibold text-slate-900">
+                            {selectedTask.task || "Untitled task"}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-[2px] text-[10px] font-semibold border ${
+                                selectedTask.overdueBy > 0
+                                  ? "bg-rose-50 text-red-700 border-rose-200"
+                                  : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              }`}
+                            >
+                              {selectedTask.deadlineStatus}
+                            </span>
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-[1px] text-[10px] font-semibold border ${
+                                selectedTask.finishedAt
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : "bg-sky-50 text-sky-700 border-sky-200"
+                              }`}
+                            >
+                              {selectedTask.finishedAt ? "Completed" : "Active"}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-[2px]">
+                              <span
+                                className="inline-flex h-3 w-3 rounded-full border border-slate-900"
+                                style={{
+                                  backgroundColor: resolveProjectColor(
+                                    selectedTask.project,
+                                    selectedTask.projectColor
+                                  ),
+                                }}
+                              />
+                              <span className="font-semibold">
+                                {selectedTask.project || "No project"}
+                              </span>
+                              {selectedTask.projectTag && (
+                                <span className="text-[9px] uppercase text-slate-500">
+                                  {selectedTask.projectTag}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right text-[10px] text-slate-600 space-y-1">
+                          <div className="font-semibold text-slate-900">
+                            {formatDateMMDDYYYYFromISODate(
+                              selectedTask.deadline
+                            )}
+                          </div>
+                          <div>
+                            {stars(selectedTask.region)} {regionRange(selectedTask.region)}
+                          </div>
+                          <div>
+                            {compactLabel(selectedTask)} · {selectedTask.remainingDays}d left
+                          </div>
+                        </div>
+                      </div>
                       {selectedTask.finishedAt && (
-                        <p className="text-emerald-600">
-                          Finished:{" "}
+                        <div className="text-[10px] text-emerald-600">
+                          Done on{" "}
                           {formatDateMMDDYYYYFromISODateTime(
                             selectedTask.finishedAt
                           )}
-                        </p>
+                        </div>
                       )}
-                      <div className="flex flex-wrap gap-2 pt-2">
+                      <div className="flex flex-wrap gap-2 pt-1">
                         <Button
                           size="sm"
                           className="h-7 text-[11px]"
@@ -2148,6 +2532,11 @@ const Planner: React.FC = () => {
                           t.project,
                           t.projectColor
                         );
+                        const isOverdue = t.overdueBy > 0 && !t.finishedAt;
+                        const isDueSoon =
+                          t.overdueBy === 0 &&
+                          t.liveRemaining <= 7 &&
+                          !t.finishedAt;
 
                         return (
                           <div
@@ -2156,62 +2545,72 @@ const Planner: React.FC = () => {
                               "rounded-xl border text-[11px] p-2 flex items-start justify-between gap-2 cursor-pointer transition-colors " +
                               (isActive
                                 ? "bg-amber-100 border-amber-400"
+                                : isOverdue
+                                ? "bg-rose-50 border-rose-300"
+                                : isDueSoon
+                                ? "bg-amber-50 border-amber-200"
                                 : "bg-white border-slate-200 hover:bg-slate-50")
                             }
                             onClick={() => setActiveId(t.id)}
                             ref={registerTaskRef(t.id)}
                           >
                             <div className="flex-1">
-                              <div className="flex items-center justify-between mb-1">
-                                <div className="flex items-center gap-1">
+                              <div className="flex items-start justify-between gap-2 mb-1">
+                                <div className="flex items-start gap-2">
                                   <span className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-slate-800 text-[10px] font-semibold text-slate-50">
                                     {idx + 1}
                                   </span>
                                   <span
-                                    className="h-3 w-3 rounded-full border border-slate-900"
+                                    className="h-3 w-3 rounded-full border border-slate-900 mt-[3px]"
                                     style={{ backgroundColor: projectColor }}
                                   />
-                                  <span className="font-semibold">
-                                    {compactLabel(t)} ({t.remainingDays} d)
-                                  </span>
+                                  <div className="flex flex-col leading-tight">
+                                    <span className="font-semibold text-slate-900">
+                                      {t.task || "Untitled task"}
+                                    </span>
+                                    <div className="flex items-center gap-1 flex-wrap text-[10px] text-slate-600">
+                                      <span className="font-semibold">
+                                        {t.project || "No project"}
+                                      </span>
+                                      {t.projectTag && (
+                                        <span className="ml-1 inline-flex items-center rounded-full border border-slate-400 px-1 py-[1px] text-[9px] font-semibold uppercase tracking-wide text-slate-600">
+                                          {t.projectTag}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
-                                <span className="text-[10px] text-slate-500">
-                                  dL: {dl}
-                                </span>
+                                <div className="text-right text-[10px] text-slate-600 leading-tight">
+                                  <div className="font-semibold text-slate-900">
+                                    {dl}
+                                  </div>
+                                  <div>
+                                    {compactLabel(t)} left · {stars(t.region)}
+                                  </div>
+                                  <div>{regionRange(t.region)}</div>
+                                </div>
                               </div>
-                              {t.project && (
-                                <div className="text-[10px] text-slate-600 flex items-center gap-1 flex-wrap">
-                                  <span className="font-semibold">
-                                    Project:
-                                  </span>
-                                  <span>{t.project}</span>
-                                  {t.projectTag && (
-                                    <span className="ml-1 inline-flex items-center rounded-full border border-slate-400 px-1 py-[1px] text-[9px] font-semibold uppercase tracking-wide text-slate-600">
-                                      {t.projectTag}
+                              <div className="flex items-center justify-between text-[10px] text-slate-600">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {isOverdue && (
+                                    <span className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2 py-[1px] text-[9px] font-semibold text-red-700">
+                                      Overdue
+                                    </span>
+                                  )}
+                                  {isDueSoon && (
+                                    <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-[1px] text-[9px] font-semibold text-amber-700">
+                                      Due soon
+                                    </span>
+                                  )}
+                                  {!isOverdue && !isDueSoon && (
+                                    <span className="text-slate-500">
+                                      {t.remainingDays}d remaining
                                     </span>
                                   )}
                                 </div>
-                              )}
-                              {!t.project && t.projectTag && (
-                                <div className="text-[10px] text-slate-600">
-                                  <span className="font-semibold">Tag:</span>{" "}
-                                  {t.projectTag}
-                                </div>
-                              )}
-                              <div className="text-[10px] text-slate-800">
-                                <span className="font-semibold">Task:</span>{" "}
-                                {t.task}
-                              </div>
-                              <div className="flex items-center justify-between mt-1">
-                                <span className="text-[10px] text-slate-500">
-                                  {stars(t.region)} {regionRange(t.region)}
-                                </span>
                                 {t.finishedAt && (
                                   <span className="text-[10px] text-emerald-600">
-                                    Done:{" "}
-                                    {formatDateMMDDYYYYFromISODateTime(
-                                      t.finishedAt
-                                    )}
+                                    Done {formatDateMMDDYYYYFromISODateTime(t.finishedAt)}
                                   </span>
                                 )}
                               </div>
@@ -2266,27 +2665,10 @@ const Planner: React.FC = () => {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Workspace activity</CardTitle>
               <CardDescription className="text-xs">
-                Key indicators, regional balance, and the latest events.
+                Regional balance, upcoming deadlines, and project health without repeating the basics.
               </CardDescription>
             </CardHeader>
             <CardContent className="text-xs max-h-[520px] overflow-y-auto pr-2 space-y-4">
-              <div className="flex flex-wrap gap-3 text-[11px]">
-                {[
-                  { label: "Active tasks", value: activeCount },
-                  { label: "Completed", value: completedCount },
-                  { label: "Projects", value: projectCount },
-                ].map((stat) => (
-                  <div
-                    key={stat.label}
-                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"
-                  >
-                    <span className="font-semibold text-slate-900 text-base leading-none">
-                      {stat.value}
-                    </span>
-                    <span className="text-slate-500">{stat.label}</span>
-                  </div>
-                ))}
-              </div>
               <div>
                 <p className="text-[11px] font-semibold text-slate-700 mb-2">
                   Active tasks by region
