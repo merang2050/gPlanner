@@ -1755,7 +1755,7 @@ const Planner: React.FC = () => {
             </Button>
           </div>
         </div>
-        <div className="grid gap-3 grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 mb-4 text-center">
+        <div className="grid grid-flow-col auto-cols-[minmax(110px,1fr)] gap-3 overflow-x-auto pb-2 mb-4 text-center">
           {statCards.map((stat) => {
             const tone =
               stat.intent === "danger"
