@@ -570,7 +570,6 @@ const Planner: React.FC = () => {
 
   const [editOpen, setEditOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
-  const [focusedColor, setFocusedColor] = useState<string>("");
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("all");
 
   // ---- Power-user filters ----
@@ -781,13 +780,6 @@ const Planner: React.FC = () => {
       if (taskFilter === "active" && t.finishedAt) return false;
       if (taskFilter === "completed" && !t.finishedAt) return false;
 
-      // focus color (existing feature)
-      if (
-        focusedColor &&
-        resolveProjectColor(t.project, t.projectColor) !== focusedColor
-      )
-        return false;
-
       // project
       if (filterProject !== "all" && (t.project || "") !== filterProject)
         return false;
@@ -809,7 +801,6 @@ const Planner: React.FC = () => {
   }, [
     tasksWithMeta,
     taskFilter,
-    focusedColor,
     searchQuery,
     filterProject,
     filterBucket,
@@ -819,42 +810,6 @@ const Planner: React.FC = () => {
   const plottedTasks = useMemo(() => {
     return displayedTasks.filter((t) => (showCompletedOnMap ? true : !t.finishedAt));
   }, [displayedTasks, showCompletedOnMap]);
-
-  const colorOptions = useMemo(() => {
-    const map = new Map<
-      string,
-      { projects: Set<string>; count: number }
-    >();
-    for (const t of plottedTasks) {
-      const color = resolveProjectColor(t.project, t.projectColor);
-      if (!map.has(color)) {
-        map.set(color, { projects: new Set(), count: 0 });
-      }
-      const entry = map.get(color)!;
-      if (t.project.trim()) entry.projects.add(t.project.trim());
-      entry.count += 1;
-    }
-    return Array.from(map.entries())
-      .map(([color, data]) => {
-        const names = Array.from(data.projects);
-        let label = "No project name";
-        if (names.length === 1) label = names[0];
-        else if (names.length > 1)
-          label = `${names[0]} +${names.length - 1} more`;
-        return {
-          color,
-          label,
-          projectNames: names,
-          count: data.count,
-        };
-      })
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [plottedTasks]);
-
-  const focusColorInfo = useMemo(
-    () => colorOptions.find((opt) => opt.color === focusedColor),
-    [colorOptions, focusedColor]
-  );
 
   const openColorPicker = (target: "new" | "edit") => {
     setColorPickerTarget(target);
@@ -1003,31 +958,6 @@ const Planner: React.FC = () => {
       setActiveId(tasks[0]?.id ?? null);
     }
   }, [tasks, activeId]);
-
-  useEffect(() => {
-    if (!focusedColor) return;
-    const stillExists = plottedTasks.some(
-      (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
-    );
-    if (!stillExists) setFocusedColor("");
-  }, [focusedColor, plottedTasks]);
-
-  useEffect(() => {
-    if (!focusedColor) return;
-    const current = tasks.find((t) => t.id === activeId);
-    if (
-      current &&
-      resolveProjectColor(current.project, current.projectColor) === focusedColor
-    ) {
-      return;
-    }
-    const next = plottedTasks.find(
-      (t) => resolveProjectColor(t.project, t.projectColor) === focusedColor
-    );
-    if (next) {
-      setActiveId(next.id);
-    }
-  }, [focusedColor, plottedTasks, tasks, activeId]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -2084,20 +2014,15 @@ const Planner: React.FC = () => {
                   const label = compactLabel(t);
                   const isActive = t.id === activeId;
                   const taskColor = resolveProjectColor(t.project, t.projectColor);
-                  const isDimmed = focusedColor
-                    ? taskColor !== focusedColor
-                    : false;
                   const fillColor = taskColor;
                   const strokeColor = isActive ? "#0f172a" : fillColor;
                   const strokeWidth = isActive ? 3 : 0;
                   const tagLabel = t.projectTag?.trim();
                   const baseOpacity = t.finishedAt ? 0.4 : 0.95;
-                  const circleOpacity = isDimmed ? 0.18 : baseOpacity;
-                  const labelOpacity = isDimmed ? 0.35 : 1;
-                  const tagColor = isDimmed ? "#94a3b8" : "#0f172a";
-                  const textColor = isDimmed
-                    ? "#f8fafc"
-                    : textColorForBackground(fillColor);
+                  const circleOpacity = baseOpacity;
+                  const labelOpacity = 1;
+                  const tagColor = "#0f172a";
+                  const textColor = textColorForBackground(fillColor);
 
                   return (
                     <g
@@ -2180,50 +2105,6 @@ const Planner: React.FC = () => {
                 );
               })() : null}
             </div>
-            <div className="mt-3 w-full max-w-[960px]">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                  Focus by color / project
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="text-[11px]"
-                  onClick={() => setFocusedColor("")}
-                  disabled={!focusedColor}
-                >
-                  Clear focus
-                </Button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {colorOptions.length === 0 && (
-                  <p className="text-[11px] text-slate-500">
-                    Add a task with a project to see quick focus chips here.
-                  </p>
-                )}
-                {colorOptions.map((opt) => (
-                  <button
-                    key={opt.color}
-                    type="button"
-                    onClick={() => setFocusedColor(opt.color)}
-                    className={`flex items-center gap-2 rounded-full border px-3 py-2 text-[11px] font-semibold transition ${
-                      focusedColor === opt.color
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-200 bg-white text-slate-800 hover:border-slate-400"
-                    }`}
-                  >
-                    <span
-                      className="inline-flex h-4 w-4 rounded-full border border-slate-900"
-                      style={{ backgroundColor: opt.color }}
-                    />
-                    <span>{opt.label}</span>
-                    <span className="text-[10px] text-slate-500">
-                      {opt.count} task{opt.count === 1 ? "" : "s"}
-                    </span>
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
 
@@ -2507,18 +2388,6 @@ const Planner: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                {focusedColor && focusColorInfo && (
-                  <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-700">
-                    <span>Showing tasks colored</span>
-                    <span
-                      className="inline-flex h-3 w-6 rounded border border-slate-400"
-                      style={{ backgroundColor: focusedColor }}
-                    />
-                    <span className="font-semibold">
-                      {focusColorInfo.label}
-                    </span>
-                  </div>
-                )}
 
                 <div className="flex-1 border border-slate-200 rounded-lg p-2 overflow-y-auto max-h-[380px]">
                   <div className="space-y-2">
